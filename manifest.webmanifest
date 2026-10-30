@@ -1,0 +1,21 @@
+{
+  "name": "RH Grupo Nogueira Lins",
+  "short_name": "RH Nogueira Lins",
+  "description": "Requisição e acompanhamento de vagas das concessionárias do Grupo Nogueira Lins.",
+  "lang": "pt-BR",
+  "start_url": "./#/inicio",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#f4f6f8",
+  "theme_color": "#1b5e84",
+  "icons": [
+    { "src": "icons/icon-192.png", "sizes": "192x192", "type": "image/png" },
+    { "src": "icons/icon-512.png", "sizes": "512x512", "type": "image/png" },
+    { "src": "icons/maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ],
+  "shortcuts": [
+    { "name": "Nova vaga", "url": "./#/nova", "icons": [{ "src": "icons/icon-192.png", "sizes": "192x192" }] },
+    { "name": "Vagas", "url": "./#/vagas", "icons": [{ "src": "icons/icon-192.png", "sizes": "192x192" }] }
+  ]
+}
