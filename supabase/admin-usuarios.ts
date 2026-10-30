@@ -31,7 +31,15 @@ Deno.serve(async (req) => {
   if (req.method !== "POST") return json({ erro: "Método não permitido." }, 405);
 
   const url = Deno.env.get("SUPABASE_URL")!;
-  const service = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
+  // Aceita a chave antiga (service_role) ou as novas chaves secretas (sb_secret_...)
+  let service = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") || "";
+  if (!service) {
+    try {
+      const s = JSON.parse(Deno.env.get("SUPABASE_SECRET_KEYS") || "{}");
+      service = s.default || Object.values(s)[0] as string || "";
+    } catch { /* sem chaves */ }
+  }
+  if (!service) return json({ erro: "Função sem chave de servidor configurada." }, 500);
   const admin = createClient(url, service, { auth: { persistSession: false } });
 
   // Quem está chamando?
