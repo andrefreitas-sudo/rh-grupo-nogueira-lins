@@ -24,7 +24,7 @@ function senhaTemporaria(): string {
 
 const PERFIS = ["master", "rh", "aprovador", "gestor", "visualizador"];
 const BOOLS = ["todas_unidades", "pode_criar", "pode_aprovar", "pode_alterar_status", "pode_comentar",
-  "pode_exportar", "ver_salario", "ver_confidencial", "ver_internos", "gerenciar_cadastros"];
+  "pode_exportar", "ver_salario", "ver_confidencial", "ver_internos", "ver_sensiveis", "gerenciar_cadastros"];
 
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: cors });
