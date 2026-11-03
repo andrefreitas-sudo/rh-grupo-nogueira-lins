@@ -6,7 +6,7 @@
 
   const C = window.RH_CONFIG || {};
   const root = document.getElementById('root');
-  const S = { me: null, unidades: [], departamentos: [], cargos: [], beneficios: [], naoLidas: 0, ultimaAtividade: Date.now() };
+  const S = { me: null, unidades: [], departamentos: [], cargos: [], beneficios: [], config: {}, naoLidas: 0, ultimaAtividade: Date.now() };
   let sb = null;
 
   // ------------------------------------------------------------------ utilidades
@@ -100,6 +100,7 @@
     print: svg('<path d="M7 9V3h10v6"/><rect x="3" y="9" width="18" height="8" rx="2"/><path d="M7 14h10v7H7z"/>'),
     copy: svg('<rect x="8" y="8" width="12" height="12" rx="2"/><path d="M16 8V5a1 1 0 00-1-1H5a1 1 0 00-1 1v10a1 1 0 001 1h3"/>'),
     clip: svg('<path d="M21 11l-8.5 8.5a5 5 0 01-7-7L14 4a3.5 3.5 0 015 5l-8.5 8.5a2 2 0 01-3-3L15 7"/>'),
+    doc: svg('<path d="M14 3H6a1 1 0 00-1 1v16a1 1 0 001 1h12a1 1 0 001-1V8z"/><path d="M14 3v5h5M9 13h6M9 17h6"/>'),
   };
 
   // ------------------------------------------------------------------ status
@@ -185,13 +186,15 @@
   }
 
   async function carregarCadastros() {
-    const [u, d, c, b] = await Promise.all([
+    const [u, d, c, b, cf] = await Promise.all([
       sb.from('unidades').select('*').order('nome'),
       sb.from('departamentos').select('*').order('nome'),
       sb.from('cargos').select('*').order('nome'),
       sb.from('beneficios').select('*').order('nome'),
+      sb.from('configuracoes').select('*'),
     ]);
     S.unidades = u.data || []; S.departamentos = d.data || []; S.cargos = c.data || []; S.beneficios = b.data || [];
+    S.config = Object.fromEntries((cf.data || []).map((x) => [x.chave, x.valor]));
   }
 
   // ------------------------------------------------------------------ login
@@ -276,7 +279,7 @@
   }
   function itensAdmin() {
     const it = [];
-    if (isMaster()) it.push({ h: 'admin/usuarios', l: 'Usuários', i: I.users }, { h: 'admin/unidades', l: 'Concessionárias', i: I.building });
+    if (isMaster()) it.push({ h: 'admin/usuarios', l: 'Usuários', i: I.users }, { h: 'admin/unidades', l: 'Concessionárias', i: I.building }, { h: 'admin/documentos', l: 'Documentos', i: I.doc });
     if (isMaster() || S.me.gerenciar_cadastros) it.push({ h: 'admin/cadastros', l: 'Cadastros', i: I.folder });
     if (isMaster()) it.push({ h: 'auditoria', l: 'Auditoria', i: I.shield });
     return it;
@@ -313,6 +316,7 @@
     contarAvisos();
     clearInterval(S.timerAvisos);
     S.timerAvisos = setInterval(contarAvisos, 60000);
+    setTimeout(retencaoAutomatica, 4000);
   }
 
   async function sair() {
@@ -350,7 +354,7 @@
       avisos: () => telaAvisos(),
       mais: () => telaMais(),
       conta: () => telaConta(),
-      admin: () => (p[1] === 'usuarios' ? telaUsuarios() : p[1] === 'unidades' ? telaUnidades() : telaCadastros(params)),
+      admin: () => (p[1] === 'usuarios' ? telaUsuarios() : p[1] === 'unidades' ? telaUnidades() : p[1] === 'documentos' ? telaDocumentos(params) : telaCadastros(params)),
       auditoria: () => telaAuditoria(params),
     }[p[0]];
     (r || telaPainel)();
@@ -385,7 +389,8 @@
   // ------------------------------------------------------------------ painel
   async function telaPainel() {
     carregando();
-    const vs = await buscarVagas();
+    const [vs, ru] = await Promise.all([buscarVagas(), isMaster() ? sb.rpc('uso_documentos') : Promise.resolve({})]);
+    const usoPct = ru && ru.data ? (Number(ru.data.total) / LIMITE_TOTAL) * 100 : 0;
     const me = S.me;
     const abertas = vs.filter(aberta);
     const aguard = vs.filter((v) => v.status === 'aguardando_aprovacao');
@@ -420,6 +425,8 @@
         <a class="card kpi-card ${atrasadas.length ? 'alert' : ''}" href="#/vagas?f=atrasadas"><div class="l">Prazo vencido</div><div class="n">${atrasadas.length}</div></a>
         <a class="card kpi-card" href="#/vagas?f=concluida"><div class="l">Concluídas no mês</div><div class="n">${concluidasMes.length}</div></a>
       </div>
+      ${usoPct >= 80 ? `<a class="card" href="#/admin/documentos" style="display:block;margin-top:12px;color:inherit;border-color:var(--warn)">
+        <b>Armazenamento de documentos em ${Math.round(usoPct)}%</b><br><small class="muted">O plano gratuito tem 1 GB. Revise a retenção ou considere o plano pago.</small></a>` : ''}
       ${paraMim.length ? `<div class="card" style="margin-top:12px"><div class="section-title"><h2>Precisa da sua ação</h2><span class="chip warn">${paraMim.length}</span></div>
         ${paraMim.slice(0, 6).map(itemVaga).join('')}</div>` : ''}
       <div class="grid two" style="margin-top:12px">
@@ -488,6 +495,199 @@
     toast('Planilha exportada.');
   }
 
+  // ------------------------------------------------------------------ documentos
+  const CATS = {
+    curriculo: { l: 'Currículo', c: 'info' },
+    parecer_psicologico: { l: 'Parecer psicológico', c: 'bad', sens: true },
+    admissao: { l: 'Admissão', c: 'ok' },
+    descricao_cargo: { l: 'Descrição do cargo', c: 'violet' },
+    outro: { l: 'Outro', c: '' },
+  };
+  const COM_CANDIDATO = ['curriculo', 'parecer_psicologico', 'admissao'];
+  const TIPOS_OK = ['application/pdf', 'image/jpeg', 'image/png', 'image/webp', 'application/msword',
+    'application/vnd.openxmlformats-officedocument.wordprocessingml.document'];
+  const EXT_TIPO = { pdf: TIPOS_OK[0], jpg: TIPOS_OK[1], jpeg: TIPOS_OK[1], png: TIPOS_OK[2], webp: TIPOS_OK[3], doc: TIPOS_OK[4], docx: TIPOS_OK[5] };
+  const ACCEPT = '.pdf,.jpg,.jpeg,.png,.webp,.doc,.docx,' + TIPOS_OK.join(',');
+  const LIMITE_ARQ = 5 * 1024 * 1024;
+  const LIMITE_TOTAL = 1024 * 1024 * 1024; // 1 GB do plano gratuito
+  const veSensiveis = () => isMaster() || !!S.me.ver_sensiveis;
+  const podeAnexar = (v) => isMaster() || v.solicitante_id === S.me.id || ((S.me.pode_alterar_status || S.me.pode_aprovar) && temUnidade(v.unidade_id));
+  const catsPermitidas = () => Object.keys(CATS).filter((k) => !CATS[k].sens || veSensiveis());
+  const fmtTam = (b) => (b >= 1048576 ? (b / 1048576).toFixed(1).replace('.', ',') + ' MB' : Math.max(1, Math.ceil((b || 0) / 1024)) + ' KB');
+  const tipoArq = (f) => (TIPOS_OK.includes(f.type) ? f.type : EXT_TIPO[(f.name.split('.').pop() || '').toLowerCase()] || '');
+  const mesesRetencao = () => Math.max(1, parseInt(S.config.retencao_meses, 10) || 6);
+
+  // Valida e reduz fotos grandes (economiza espaço)
+  async function prepararArquivo(f) {
+    const tipo = tipoArq(f);
+    if (!tipo) throw new Error(`"${f.name}": formato não aceito. Use PDF, Word ou imagem.`);
+    if (tipo.startsWith('image/') && f.size > 700 * 1024 && window.createImageBitmap) {
+      try {
+        const bmp = await createImageBitmap(f);
+        const fator = Math.min(1, 1800 / Math.max(bmp.width, bmp.height));
+        const cv = document.createElement('canvas');
+        cv.width = Math.round(bmp.width * fator); cv.height = Math.round(bmp.height * fator);
+        cv.getContext('2d').drawImage(bmp, 0, 0, cv.width, cv.height);
+        const blob = await new Promise((r) => cv.toBlob(r, 'image/jpeg', 0.78));
+        if (blob && blob.size < f.size) return { arquivo: blob, nome: f.name.replace(/\.[^.]+$/, '') + '.jpg', tipo: 'image/jpeg' };
+      } catch (_) { /* mantém o original */ }
+    }
+    return { arquivo: f, nome: f.name, tipo };
+  }
+
+  // Registra o documento e envia o arquivo (o banco só aceita arquivo registrado)
+  async function enviarAnexos(vagaId, itens) {
+    let ok = 0; const falhas = [];
+    for (const it of itens) {
+      try {
+        const p = await prepararArquivo(it.file);
+        if (p.arquivo.size > LIMITE_ARQ) throw new Error(`"${it.file.name}" tem ${fmtTam(p.arquivo.size)}; o limite é 5 MB.`);
+        const ext = (p.nome.split('.').pop() || 'bin').toLowerCase().replace(/[^a-z0-9]/g, '').slice(0, 5) || 'bin';
+        const caminho = `${vagaId}/${crypto.randomUUID()}.${ext}`;
+        const { data: row, error } = await sb.from('vaga_anexos').insert({
+          vaga_id: vagaId, caminho, nome: p.nome.slice(0, 150), tamanho: p.arquivo.size, categoria: it.categoria,
+          candidato: (it.candidato || '').trim().slice(0, 120) || null, contratado: !!it.contratado,
+        }).select('id').single();
+        if (error) throw error;
+        const { error: eUp } = await sb.storage.from('anexos').upload(caminho, p.arquivo, { contentType: p.tipo, upsert: false });
+        if (eUp) { await sb.from('vaga_anexos').delete().eq('id', row.id); throw eUp; }
+        ok++;
+      } catch (e) { falhas.push(erroAmigavel(e)); }
+    }
+    if (falhas.length) toast(`${ok ? ok + ' enviado(s). ' : ''}Não enviado: ${falhas[0]}`, true);
+    else if (ok) toast(ok === 1 ? 'Documento anexado.' : `${ok} documentos anexados.`);
+    return ok;
+  }
+
+  // Bloco reutilizável: tipo de documento + candidato + escolha de arquivos
+  function painelArquivos(padrao, { candidato = '', titulo = '' } = {}) {
+    const id = 'pa' + Math.random().toString(36).slice(2, 9);
+    let arquivos = [];
+    const cats = catsPermitidas();
+    const html = `<div class="file-panel" id="${id}">
+      ${titulo ? `<div class="fp-title">${esc(titulo)}</div>` : ''}
+      <div class="form-grid cols-2">
+        <label class="f"><span>Tipo de documento</span><select class="input" data-fp-cat>${cats.map((k) => `<option value="${k}" ${k === padrao ? 'selected' : ''}>${esc(CATS[k].l)}${CATS[k].sens ? ' (restrito ao RH)' : ''}</option>`).join('')}</select></label>
+        <label class="f" data-fp-candwrap><span>Nome do candidato</span><input class="input" data-fp-cand maxlength="120" value="${esc(candidato)}" placeholder="Ajuda a localizar e a aplicar a retenção"></label>
+      </div>
+      <label class="btn block fp-pick">${I.clip} Escolher arquivos<input type="file" multiple accept="${ACCEPT}" class="hidden" data-fp-file></label>
+      <div data-fp-list></div>
+      <div class="hint">PDF, Word ou imagem, até 5 MB cada. Fotos grandes são reduzidas automaticamente.</div></div>`;
+    const ligar = (root) => {
+      const el = $('#' + id, root);
+      if (!el) return;
+      const cat = $('[data-fp-cat]', el), wrap = $('[data-fp-candwrap]', el), lista = $('[data-fp-list]', el), inp = $('[data-fp-file]', el);
+      const ajusta = () => wrap.classList.toggle('hidden', !COM_CANDIDATO.includes(cat.value));
+      const pinta = () => {
+        lista.innerHTML = arquivos.map((f, i) => `<div class="fp-item">${I.doc}<span class="fp-name">${esc(f.name)}</span><small>${fmtTam(f.size)}</small>
+          <button type="button" class="btn sm ghost" data-rm="${i}" aria-label="Remover arquivo">✕</button></div>`).join('');
+        on(lista, '[data-rm]', 'click', (e) => { arquivos.splice(+e.currentTarget.dataset.rm, 1); pinta(); });
+      };
+      cat.addEventListener('change', ajusta); ajusta();
+      inp.addEventListener('change', () => { arquivos = arquivos.concat(Array.from(inp.files || [])); inp.value = ''; pinta(); });
+      pinta();
+    };
+    const definirCategoria = (root, k) => { const el = $('#' + id, root); if (el && cats.includes(k)) { const s = $('[data-fp-cat]', el); s.value = k; s.dispatchEvent(new Event('change')); } };
+    const itens = (root, extra = {}) => {
+      const el = $('#' + id, root);
+      if (!el) return [];
+      const categoria = $('[data-fp-cat]', el).value;
+      const cand = COM_CANDIDATO.includes(categoria) ? $('[data-fp-cand]', el).value : '';
+      return arquivos.map((file) => ({ file, categoria, candidato: cand, ...extra }));
+    };
+    return { html, ligar, itens, definirCategoria, limpar: () => { arquivos = []; }, quantidade: () => arquivos.length };
+  }
+
+  function modalAnexar(v, padrao, depois) {
+    const pa = painelArquivos(padrao || 'curriculo');
+    const m = modal(`<h2>Anexar documentos</h2><p class="muted" style="margin-top:0">${esc(v.numero)} · ${esc(v.cargo_nome)}</p>
+      <form id="f-anx" class="form-grid">${pa.html}
+      <div class="actions"><button type="button" class="btn" data-fechar>Cancelar</button><button class="btn primary" type="submit">Enviar</button></div></form>`);
+    pa.ligar(m.el);
+    $('#f-anx', m.el).addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const itens = pa.itens(m.el);
+      if (!itens.length) return toast('Escolha ao menos um arquivo.', true);
+      const solta = travar($('button[type=submit]', m.el), 'Enviando…');
+      const n = await enviarAnexos(v.id, itens);
+      solta();
+      if (n) { m.fechar(); depois && depois(); }
+    });
+  }
+
+  async function abrirAnexo(a) {
+    const w = window.open('', '_blank'); // abre já no clique (evita bloqueio de pop-up)
+    const { data, error } = await sb.storage.from('anexos').createSignedUrl(a.caminho, 120);
+    if (error || !data) { if (w) w.close(); return toast(error ? erroAmigavel(error) : 'Arquivo indisponível.', true); }
+    if (w) { w.opener = null; w.location.href = data.signedUrl; } else location.href = data.signedUrl;
+  }
+
+  async function excluirAnexo(a) {
+    if (!(await confirmar('Excluir documento', `Remover "${a.nome}"? Esta ação não pode ser desfeita.`, 'Excluir', true))) return false;
+    const { error: e1 } = await sb.storage.from('anexos').remove([a.caminho]);
+    if (e1) { toast(erroAmigavel(e1), true); return false; }
+    const { error } = await sb.from('vaga_anexos').delete().eq('id', a.id);
+    if (error) { toast(erroAmigavel(error), true); return false; }
+    toast('Documento excluído.');
+    return true;
+  }
+
+  function htmlDocumentos(v, anexos) {
+    const pode = podeAnexar(v);
+    const grupos = Object.keys(CATS).map((k) => [k, anexos.filter((a) => (a.categoria || 'outro') === k)]).filter(([, l]) => l.length);
+    const meses = mesesRetencao();
+    return `<div class="card" id="card-docs"><div class="section-title"><h2>Documentos${anexos.length ? ` <small class="muted">(${anexos.length})</small>` : ''}</h2>
+        ${pode ? `<button class="btn sm primary" data-anexar>${I.clip} Anexar</button>` : ''}</div>
+      ${grupos.length ? grupos.map(([k, l]) => `<div class="doc-group"><div class="doc-group-t"><span class="chip ${CATS[k].c}">${esc(CATS[k].l)}</span>${CATS[k].sens ? '<small class="muted">Restrito ao RH</small>' : ''}</div>
+        ${l.map((a) => `<div class="list-row doc-row"><span class="doc-ic">${I.doc}</span><div class="grow"><b class="doc-name">${esc(a.nome)}</b>
+          <br><small>${a.candidato ? esc(a.candidato) + ' · ' : ''}${fmtTam(a.tamanho)} · ${fmtData(a.criado_em)}${a.autor_nome ? ' · ' + esc(a.autor_nome) : ''}</small>
+          ${a.contratado ? '<br><span class="chip ok plain" style="margin-top:4px">Contratado · não expira</span>' : ''}</div>
+          <div class="doc-act"><button class="btn sm" data-abrir="${esc(a.id)}">Abrir</button>
+          ${pode && COM_CANDIDATO.includes(k) ? `<button class="btn sm ghost" data-contr="${esc(a.id)}" title="${a.contratado ? 'Desmarcar' : 'Marcar como do contratado (não é excluído pela retenção)'}" aria-label="Marcar contratado">${a.contratado ? '★' : '☆'}</button>` : ''}
+          ${a.autor_id === S.me.id || isMaster() ? `<button class="btn sm ghost danger" data-del-anexo="${esc(a.id)}" aria-label="Excluir">✕</button>` : ''}</div></div>`).join('')}</div>`).join('')
+        : `<p class="muted" style="margin:0">Nenhum documento.${pode ? ' Anexe currículos, pareceres e documentos de admissão.' : ''}</p>`}
+      <p class="hint" style="margin-top:12px">Currículos e pareceres de candidatos não contratados são excluídos ${meses} ${meses === 1 ? 'mês' : 'meses'} após o encerramento da vaga (LGPD). Use ☆ para manter os do contratado.</p></div>`;
+  }
+
+  function ligarDocumentos(el, v, anexos, recarregar) {
+    const padrao = ['admissao', 'concluida'].includes(v.status) ? 'admissao' : ['em_divulgacao', 'aprovada', 'rascunho', 'aguardando_aprovacao', 'devolvida'].includes(v.status) ? 'descricao_cargo' : 'curriculo';
+    on(el, '[data-anexar]', 'click', () => modalAnexar(v, padrao, recarregar));
+    on(el, '[data-abrir]', 'click', (e) => abrirAnexo(anexos.find((x) => x.id === e.currentTarget.dataset.abrir)));
+    on(el, '[data-del-anexo]', 'click', async (e) => { if (await excluirAnexo(anexos.find((x) => x.id === e.currentTarget.dataset.delAnexo))) recarregar(); });
+    on(el, '[data-contr]', 'click', async (e) => {
+      const a = anexos.find((x) => x.id === e.currentTarget.dataset.contr);
+      const { error } = await sb.from('vaga_anexos').update({ contratado: !a.contratado }).eq('id', a.id);
+      if (error) return toast(erroAmigavel(error), true);
+      toast(a.contratado ? 'Marcação removida.' : 'Documento mantido como do contratado.');
+      recarregar();
+    });
+  }
+
+  // Exclui documentos vencidos (em lotes): primeiro o arquivo, depois o registro
+  async function purgarVencidos(lista) {
+    let n = 0;
+    for (let i = 0; i < lista.length; i += 50) {
+      const parte = lista.slice(i, i + 50);
+      const { error } = await sb.storage.from('anexos').remove(parte.map((a) => a.caminho));
+      if (error) break;
+      const { error: e2 } = await sb.from('vaga_anexos').delete().in('id', parte.map((a) => a.id));
+      if (e2) break;
+      n += parte.length;
+    }
+    return n;
+  }
+
+  async function retencaoAutomatica() {
+    if (!isMaster() || S.config.retencao_automatica === false) return;
+    const chave = 'rh-gnl-retencao-' + S.me.id;
+    try { if (localStorage.getItem(chave) === hoje()) return; } catch (_) { /* sem armazenamento */ }
+    const { data, error } = await sb.rpc('anexos_vencidos');
+    if (error) return;
+    const n = data && data.length ? await purgarVencidos(data) : 0;
+    try { localStorage.setItem(chave, hoje()); } catch (_) { /* sem armazenamento */ }
+    if (n) toast(`${n} documento(s) com prazo de retenção vencido foram excluídos (LGPD).`);
+  }
+
   // ------------------------------------------------------------------ detalhe
   async function telaVaga(id) {
     carregando();
@@ -519,6 +719,7 @@
     view().innerHTML = `<div class="page">
       <div class="page-head"><a class="btn ghost sm" href="#/vagas">${I.back} Vagas</a>
         <div class="actions">
+          ${podeAnexar(v) ? `<button class="btn sm" data-anexar-topo>${I.clip} Anexar</button>` : ''}
           <button class="btn sm" data-print>${I.print} PDF</button>
           ${me.pode_criar || m ? `<a class="btn sm" href="#/nova?dup=${esc(v.id)}">${I.copy} Duplicar</a>` : ''}
         </div></div>
@@ -585,12 +786,7 @@
                 ${verInternos ? '<label class="check" style="padding:0"><input type="checkbox" name="interno"> Interno (só RH)</label>' : '<span></span>'}
                 <button class="btn primary sm" type="submit">Comentar</button></div></form>` : ''}
           </div>
-          <div class="card"><div class="section-title"><h2>Anexos</h2>
-            <label class="btn sm">${I.clip} Anexar<input type="file" id="up" class="hidden" accept="application/pdf,image/jpeg,image/png,image/webp"></label></div>
-            ${anexos.length ? anexos.map((a) => `<div class="list-row"><div class="grow"><b style="font-size:14px;word-break:break-all">${esc(a.nome)}</b><br><small>${fmtDH(a.criado_em)} · ${Math.ceil((a.tamanho || 0) / 1024)} KB</small></div>
-              <button class="btn sm" data-baixar="${esc(a.id)}">Abrir</button>
-              ${a.autor_id === me.id || m ? `<button class="btn sm ghost danger" data-del-anexo="${esc(a.id)}" aria-label="Excluir">✕</button>` : ''}</div>`).join('') : '<p class="muted" style="margin:0">Nenhum anexo. Aceita PDF ou imagem até 5 MB.</p>'}
-          </div>
+          ${htmlDocumentos(v, anexos)}
         </div>
       </div></div>`;
 
@@ -614,40 +810,17 @@
       if (error) return toast(erroAmigavel(error), true);
       telaVaga(v.id);
     });
-    const up = $('#up');
-    up.addEventListener('change', async () => {
-      const arq = up.files[0];
-      if (!arq) return;
-      if (arq.size > 5 * 1024 * 1024) return toast('Arquivo maior que 5 MB.', true);
-      if (!['application/pdf', 'image/jpeg', 'image/png', 'image/webp'].includes(arq.type)) return toast('Envie PDF, JPG, PNG ou WEBP.', true);
-      toast('Enviando anexo…');
-      const ext = (arq.name.split('.').pop() || 'bin').toLowerCase().replace(/[^a-z0-9]/g, '').slice(0, 5);
-      const caminho = `${v.id}/${crypto.randomUUID()}.${ext}`;
-      const { error } = await sb.storage.from('anexos').upload(caminho, arq, { contentType: arq.type, upsert: false });
-      if (error) return toast(erroAmigavel(error), true);
-      const { error: e2 } = await sb.from('vaga_anexos').insert({ vaga_id: v.id, caminho, nome: arq.name.slice(0, 150), tamanho: arq.size });
-      if (e2) { await sb.storage.from('anexos').remove([caminho]); return toast(erroAmigavel(e2), true); }
-      toast('Anexo enviado.'); telaVaga(v.id);
-    });
-    on(el, '[data-baixar]', 'click', async (e) => {
-      const a = anexos.find((x) => x.id === e.currentTarget.dataset.baixar);
-      const { data, error } = await sb.storage.from('anexos').createSignedUrl(a.caminho, 60);
-      if (error) return toast(erroAmigavel(error), true);
-      window.open(data.signedUrl, '_blank', 'noopener');
-    });
-    on(el, '[data-del-anexo]', 'click', async (e) => {
-      const a = anexos.find((x) => x.id === e.currentTarget.dataset.delAnexo);
-      if (!(await confirmar('Excluir anexo', `Remover "${a.nome}"?`, 'Excluir', true))) return;
-      await sb.storage.from('anexos').remove([a.caminho]);
-      const { error } = await sb.from('vaga_anexos').delete().eq('id', a.id);
-      if (error) return toast(erroAmigavel(error), true);
-      telaVaga(v.id);
-    });
+    ligarDocumentos($('#card-docs', el), v, anexos, () => telaVaga(v.id));
+    on(el, '[data-anexar-topo]', 'click', () => $('#card-docs [data-anexar]', el).click());
   }
 
   function modalStatus(v, alvo, trans) {
     let opcoes = alvo === 'rh' ? trans.filter((t) => ETAPAS_RH.includes(t)) : [alvo];
     const titulo = alvo === 'rh' ? 'Atualizar status' : ST[alvo].l;
+    const CAT_ETAPA = { em_divulgacao: 'descricao_cargo', triagem: 'curriculo', entrevistas: 'curriculo',
+      proposta_enviada: veSensiveis() ? 'parecer_psicologico' : 'curriculo', admissao: 'admissao', concluida: 'admissao' };
+    const comAnexo = podeAnexar(v) && opcoes.some((o) => CAT_ETAPA[o]);
+    const pa = comAnexo ? painelArquivos(CAT_ETAPA[opcoes[0]] || 'curriculo', { titulo: 'Anexar documentos (opcional)' }) : null;
     const m = modal(`<h2>${esc(titulo)}</h2><form id="f-st" class="form-grid" novalidate>
       ${opcoes.length > 1 ? `<div class="f"><span style="display:block;font-size:13px;font-weight:600;margin-bottom:8px">Novo status</span>
         <div class="seg">${opcoes.map((o, i) => `<label><input type="radio" name="st" value="${o}" ${i === 0 ? 'checked' : ''}><span>${esc(ST[o].l)}</span></label>`).join('')}</div></div>`
@@ -656,13 +829,16 @@
         <label class="f"><span>Contratado(s) <em>*</em></span><input class="input" name="contratado" maxlength="300" placeholder="Nome completo"></label>
         <label class="f"><span>Data de admissão</span><input class="input" type="date" name="adm"></label></div>
       <label class="f"><span id="st-lbl">Comentário</span><textarea class="input" name="com" maxlength="2000" placeholder="Visível para o solicitante e gestores autorizados"></textarea></label>
-      <div class="actions"><button type="button" class="btn" data-fechar>Voltar</button><button class="btn primary" type="submit">Confirmar</button></div></form>`);
+      ${pa ? `<div id="st-anx">${pa.html}</div>` : ''}
+      <div class="actions"><button type="button" class="btn" data-fechar>Voltar</button><button class="btn primary" type="submit">Confirmar</button></div></form>`, { wide: !!pa });
     const f = $('#f-st', m.el);
+    if (pa) pa.ligar(m.el);
     const sel = () => (f.querySelector('input[name=st]:checked') || f.querySelector('input[name=st]')).value;
     const ajustar = () => {
       const s = sel();
       $('#st-conc', m.el).classList.toggle('hidden', s !== 'concluida');
       $('#st-lbl', m.el).innerHTML = PEDE_MOTIVO.includes(s) ? 'Motivo <em>*</em>' : 'Comentário';
+      if (pa) { $('#st-anx', m.el).classList.toggle('hidden', !CAT_ETAPA[s]); if (CAT_ETAPA[s]) pa.definirCategoria(m.el, CAT_ETAPA[s]); }
     };
     on(f, 'input[name=st]', 'change', ajustar); ajustar();
     f.addEventListener('submit', async (e) => {
@@ -673,9 +849,11 @@
       const solta = travar($('button[type=submit]', f), 'Salvando…');
       const { error } = await sb.rpc('mudar_status', { p_vaga: v.id, p_status: s, p_comentario: com || null,
         p_contratado: s === 'concluida' ? f.contratado.value.trim() : null, p_data_admissao: s === 'concluida' && f.adm.value ? f.adm.value : null });
-      solta();
-      if (error) return toast(erroAmigavel(error), true);
-      m.fechar(); toast('Status atualizado.'); telaVaga(v.id);
+      if (error) { solta(); return toast(erroAmigavel(error), true); }
+      let itens = pa && CAT_ETAPA[s] ? pa.itens(m.el) : [];
+      if (s === 'concluida') itens = itens.map((it) => ({ ...it, candidato: it.candidato || f.contratado.value.trim(), contratado: COM_CANDIDATO.includes(it.categoria) }));
+      if (itens.length) await enviarAnexos(v.id, itens); else toast('Status atualizado.');
+      solta(); m.fechar(); telaVaga(v.id);
     });
   }
 
@@ -727,6 +905,11 @@
     if (!f.unidade_id && unis.length === 1) f.unidade_id = unis[0].id;
     const vagaOrig = id ? (await sb.from('vagas').select('status,numero').eq('id', id).maybeSingle()).data : null;
     let passo = 0;
+    const pend = []; // documentos escolhidos no formulário, enviados ao salvar
+    const paForm = painelArquivos('descricao_cargo');
+    const htmlPend = () => (pend.length ? `<div class="fp-queue"><b>${pend.length} documento(s) para enviar ao salvar</b>
+      ${pend.map((it, i) => `<div class="fp-item">${I.doc}<span class="fp-name">${esc(it.file.name)}</span><span class="chip ${CATS[it.categoria].c}">${esc(CATS[it.categoria].l)}</span>
+        <button type="button" class="btn sm ghost" data-pend-rm="${i}" aria-label="Remover">✕</button></div>`).join('')}</div>` : '');
 
     const opt = (lista, val, vazio = 'Selecione') => `<option value="">${esc(vazio)}</option>` + lista.map((o) => {
       const [v, l] = Array.isArray(o) ? o : [o, o];
@@ -821,7 +1004,20 @@
           ${campo('Quem participa das entrevistas', inp('entrevistadores', 'text', { max: 500 }), false, 'span-2')}
           ${campo('Indicações de candidatos', area('indicacoes', { max: 1000, ph: 'Nome e contato, se houver' }), false, 'span-2')}
           ${campo('Observações para o RH', area('observacoes'), false, 'span-2')}
-          <p class="hint span-2" style="margin:0">Anexos (ex.: descrição de cargo) podem ser incluídos na tela da vaga depois de salvar.</p></div>`,
+          <div class="span-2"><div class="doc-sec-t">${I.clip} Documentos (opcional)</div>
+            <p class="hint" style="margin:0 0 10px">Descrição do cargo, currículos de candidatos indicados ou outros arquivos. Serão enviados ao salvar a vaga.</p>
+            <div id="pend-lista">${htmlPend()}</div>${paForm.html}
+            <button type="button" class="btn sm" data-pend-add style="margin-top:8px">${I.plus} Adicionar à lista</button></div></div>`,
+        depois: (el) => {
+          paForm.ligar(el);
+          const repinta = () => { $('#pend-lista', el).innerHTML = htmlPend(); on($('#pend-lista', el), '[data-pend-rm]', 'click', (e) => { pend.splice(+e.currentTarget.dataset.pendRm, 1); repinta(); }); };
+          on(el, '[data-pend-add]', 'click', () => {
+            const novos = paForm.itens(el);
+            if (!novos.length) return toast('Escolha os arquivos primeiro.', true);
+            pend.push(...novos); paForm.limpar(); coletar(); desenhar();
+          });
+          repinta();
+        },
         ok: () => (!f.urgencia ? 'Selecione a urgência.' : null) },
       { t: 'Revisão', h: () => {
           const li = (a, b) => `<div><dt>${esc(a)}</dt><dd>${b}</dd></div>`;
@@ -832,12 +1028,15 @@
             ${li('Faixa salarial', r.salario_min || r.salario_max ? `${money(r.salario_min)} a ${money(r.salario_max)}` : '—')}
             ${li('Confidencial', simNao(f.confidencial))}
             ${li('CNH', f.cnh_obrigatoria ? 'Obrigatória · ' + txt(f.cnh_categoria) : 'Não obrigatória')}${li('Início ideal', fmtData(f.data_inicio_ideal))}
+            ${li('Documentos', pend.length ? pend.map((it) => esc(it.file.name)).join('<br>') : '—')}
           </dl><p class="muted" style="margin:16px 0 0">Ao enviar, a vaga segue para aprovação. Você pode salvar como rascunho e enviar depois.</p>`;
         }, ok: () => null },
     ];
 
     function coletar() {
       const el = view();
+      // arquivos escolhidos mas não adicionados à lista entram automaticamente
+      if ($('#pend-lista', el) && paForm.quantidade()) { pend.push(...paForm.itens(el)); paForm.limpar(); }
       $$('[name]', el).forEach((n) => {
         const k = n.name;
         if (k === 'r_ben') return;
@@ -916,11 +1115,19 @@
       if (!rem.tem_variavel) rem.regra_variavel = null;
       const { error: er } = await sb.from('vaga_remuneracao').upsert(rem, { onConflict: 'vaga_id' });
       if (er) toast('Vaga salva, mas a remuneração não pôde ser gravada: ' + erroAmigavel(er), true);
+      let docsFalharam = false;
+      if (pend.length) {
+        btn.textContent = 'Enviando documentos…';
+        const n = await enviarAnexos(vagaId, pend);
+        docsFalharam = n < pend.length;
+        pend.length = 0;
+      }
+      const avisoDocs = docsFalharam ? ' Alguns documentos não foram enviados; anexe-os pela tela da vaga.' : '';
       if (enviar) {
         const { error: es } = await sb.rpc('mudar_status', { p_vaga: vagaId, p_status: 'aguardando_aprovacao', p_comentario: vagaOrig?.status === 'devolvida' ? 'Ajustes realizados e reenviada.' : null });
         if (es) { solta(); location.hash = '#/vaga/' + vagaId; return toast(erroAmigavel(es), true); }
-        toast('Vaga enviada para aprovação.');
-      } else toast('Rascunho salvo.');
+        toast('Vaga enviada para aprovação.' + avisoDocs, docsFalharam);
+      } else toast('Rascunho salvo.' + avisoDocs, docsFalharam);
       location.hash = '#/vaga/' + vagaId;
     }
 
@@ -975,16 +1182,17 @@
 
   // ------------------------------------------------------------------ administração: usuários
   const MODELOS = {
-    master: { escopo: 'unidade', todas_unidades: true, pode_criar: true, pode_aprovar: true, pode_alterar_status: true, pode_comentar: true, pode_exportar: true, ver_salario: true, ver_confidencial: true, ver_internos: true, gerenciar_cadastros: true },
-    rh: { escopo: 'unidade', todas_unidades: false, pode_criar: true, pode_aprovar: false, pode_alterar_status: true, pode_comentar: true, pode_exportar: true, ver_salario: true, ver_confidencial: true, ver_internos: true, gerenciar_cadastros: true },
-    aprovador: { escopo: 'unidade', todas_unidades: false, pode_criar: true, pode_aprovar: true, pode_alterar_status: false, pode_comentar: true, pode_exportar: true, ver_salario: true, ver_confidencial: true, ver_internos: false, gerenciar_cadastros: false },
-    gestor: { escopo: 'proprias', todas_unidades: false, pode_criar: true, pode_aprovar: false, pode_alterar_status: false, pode_comentar: true, pode_exportar: false, ver_salario: false, ver_confidencial: false, ver_internos: false, gerenciar_cadastros: false },
-    visualizador: { escopo: 'unidade', todas_unidades: false, pode_criar: false, pode_aprovar: false, pode_alterar_status: false, pode_comentar: false, pode_exportar: false, ver_salario: false, ver_confidencial: false, ver_internos: false, gerenciar_cadastros: false },
+    master: { escopo: 'unidade', todas_unidades: true, pode_criar: true, pode_aprovar: true, pode_alterar_status: true, pode_comentar: true, pode_exportar: true, ver_salario: true, ver_confidencial: true, ver_internos: true, ver_sensiveis: true, gerenciar_cadastros: true },
+    rh: { escopo: 'unidade', todas_unidades: false, pode_criar: true, pode_aprovar: false, pode_alterar_status: true, pode_comentar: true, pode_exportar: true, ver_salario: true, ver_confidencial: true, ver_internos: true, ver_sensiveis: true, gerenciar_cadastros: true },
+    aprovador: { escopo: 'unidade', todas_unidades: false, pode_criar: true, pode_aprovar: true, pode_alterar_status: false, pode_comentar: true, pode_exportar: true, ver_salario: true, ver_confidencial: true, ver_internos: false, ver_sensiveis: false, gerenciar_cadastros: false },
+    gestor: { escopo: 'proprias', todas_unidades: false, pode_criar: true, pode_aprovar: false, pode_alterar_status: false, pode_comentar: true, pode_exportar: false, ver_salario: false, ver_confidencial: false, ver_internos: false, ver_sensiveis: false, gerenciar_cadastros: false },
+    visualizador: { escopo: 'unidade', todas_unidades: false, pode_criar: false, pode_aprovar: false, pode_alterar_status: false, pode_comentar: false, pode_exportar: false, ver_salario: false, ver_confidencial: false, ver_internos: false, ver_sensiveis: false, gerenciar_cadastros: false },
   };
   const PERMS = [
     ['pode_criar', 'Abrir vagas'], ['pode_aprovar', 'Aprovar / reprovar vagas'], ['pode_alterar_status', 'Alterar status (RH)'],
     ['pode_comentar', 'Comentar'], ['pode_exportar', 'Exportar planilha'], ['ver_salario', 'Ver salário e benefícios'],
-    ['ver_confidencial', 'Ver vagas confidenciais'], ['ver_internos', 'Ver comentários internos do RH'], ['gerenciar_cadastros', 'Gerenciar cadastros (cargos, etc.)'],
+    ['ver_confidencial', 'Ver vagas confidenciais'], ['ver_internos', 'Ver comentários internos do RH'],
+    ['ver_sensiveis', 'Ver e anexar parecer psicológico'], ['gerenciar_cadastros', 'Gerenciar cadastros (cargos, etc.)'],
   ];
 
   async function invocarAdmin(corpo) {
@@ -1212,6 +1420,83 @@
     on(view(), '[data-i]', 'click', (e) => { e.preventDefault(); abrir(lista.find((x) => x.id === e.currentTarget.dataset.i)); });
   }
 
+  // ------------------------------------------------------------------ administração: documentos
+  async function telaDocumentos(params) {
+    if (!isMaster()) return semAcesso();
+    carregando();
+    await carregarCadastros();
+    const cat = params.get('c') || '';
+    let q = sb.from('vaga_anexos').select('*, vagas(numero,cargo_nome,status)');
+    if (cat) q = q.eq('categoria', cat);
+    const [ru, rv, rl] = await Promise.all([sb.rpc('uso_documentos'), sb.rpc('anexos_vencidos'), q.order('criado_em', { ascending: false }).limit(300)]);
+    const uso = ru.data || { total: 0, qtd: 0, por_categoria: {} };
+    const venc = rv.data || [];
+    const docs = rl.data || [];
+    const pct = Math.min(100, (Number(uso.total) / LIMITE_TOTAL) * 100);
+    const pctTxt = pct < 0.1 && uso.total > 0 ? '< 0,1' : pct.toFixed(1).replace('.', ',');
+    const meses = mesesRetencao();
+    const auto = S.config.retencao_automatica !== false;
+    const porCat = Object.entries(uso.por_categoria || {}).sort((a, b) => b[1] - a[1]);
+    view().innerHTML = `<div class="page" style="max-width:900px"><div class="page-head"><div><h1>Documentos</h1><small>${uso.qtd} arquivo(s) guardado(s)</small></div></div>
+      <div class="grid two" style="align-items:start">
+        <div class="card"><h2 style="margin-bottom:10px">Espaço usado</h2>
+          <div class="meter ${pct >= 80 ? 'alert' : ''}"><i style="width:${Math.max(pct, uso.total ? 1 : 0)}%"></i></div>
+          <p style="margin:8px 0 12px"><b>${fmtTam(Number(uso.total))}</b> de 1 GB (${pctTxt}%)${pct >= 80 ? ' · <span class="overdue">perto do limite gratuito</span>' : ''}</p>
+          ${porCat.length ? `<div class="bars">${porCat.map(([k, b]) => `<div class="bar-row"><span class="lbl">${esc(CATS[k]?.l || k)}</span>
+            <div class="bar-track"><div class="bar-fill" style="width:${(b / Math.max(1, porCat[0][1])) * 100}%"></div></div><span class="v" style="min-width:60px">${fmtTam(b)}</span></div>`).join('')}</div>` : '<p class="muted" style="margin:0">Nenhum documento ainda.</p>'}
+        </div>
+        <div class="card"><h2 style="margin-bottom:10px">Retenção (LGPD)</h2>
+          <form id="f-ret" class="form-grid">
+            <label class="f"><span>Excluir currículos e pareceres de não contratados após</span>
+              <div style="display:flex;gap:8px;align-items:center"><input class="input" type="number" name="meses" min="1" max="60" value="${meses}" style="max-width:100px" inputmode="numeric"><span>meses do encerramento da vaga</span></div></label>
+            <label class="check"><input type="checkbox" name="auto" ${auto ? 'checked' : ''}> Exclusão automática (roda quando um Master abre o app)</label>
+            <div class="hint" style="margin-top:-6px">Documentos marcados como do contratado (★), de admissão, descrição de cargo e outros não são excluídos.</div>
+            <div class="actions" style="justify-content:flex-end"><button class="btn primary sm" type="submit">Salvar</button></div></form></div>
+      </div>
+      <div class="card" style="margin-top:12px"><div class="section-title"><h2>Retenção vencida</h2>
+        ${venc.length ? `<button class="btn sm danger" data-purgar>Excluir agora (${venc.length})</button>` : ''}</div>
+        ${venc.length ? venc.slice(0, 30).map((a) => `<div class="list-row"><span class="doc-ic">${I.doc}</span><div class="grow"><b class="doc-name">${esc(a.nome)}</b><br>
+          <small>${esc(CATS[a.categoria]?.l || a.categoria)} · ${esc(a.numero)} · vaga encerrada em ${fmtData(a.encerrada_em)}</small></div></div>`).join('') + (venc.length > 30 ? `<p class="muted">+ ${venc.length - 30} documento(s)</p>` : '')
+          : '<p class="muted" style="margin:0">Nenhum documento com prazo vencido.</p>'}</div>
+      <div class="card"><div class="section-title"><h2>Todos os documentos</h2>
+        <select class="input" id="fc" style="max-width:220px" aria-label="Filtrar tipo"><option value="">Todos os tipos</option>${Object.entries(CATS).map(([k, c]) => `<option value="${k}" ${cat === k ? 'selected' : ''}>${esc(c.l)}</option>`).join('')}</select></div>
+        <input class="input" type="search" id="bd" placeholder="Buscar por arquivo, candidato ou nº da vaga" style="margin-bottom:8px" aria-label="Buscar documento">
+        <div id="ld"></div></div></div>`;
+    const el = view();
+    const pintar = () => {
+      const t = $('#bd').value.toLowerCase();
+      const r = docs.filter((a) => !t || [a.nome, a.candidato, a.vagas?.numero, a.vagas?.cargo_nome].join(' ').toLowerCase().includes(t));
+      $('#ld').innerHTML = r.length ? r.map((a) => `<div class="list-row doc-row"><span class="doc-ic">${I.doc}</span><div class="grow"><b class="doc-name">${esc(a.nome)}</b><br>
+          <small><span class="chip ${CATS[a.categoria]?.c || ''} plain">${esc(CATS[a.categoria]?.l || a.categoria)}</span> ${a.candidato ? esc(a.candidato) + ' · ' : ''}<a href="#/vaga/${esc(a.vaga_id)}">${esc(a.vagas?.numero || 'vaga')}</a> · ${fmtTam(a.tamanho)} · ${fmtData(a.criado_em)}</small></div>
+          <div class="doc-act"><button class="btn sm" data-abrir="${esc(a.id)}">Abrir</button><button class="btn sm ghost danger" data-del-anexo="${esc(a.id)}" aria-label="Excluir">✕</button></div></div>`).join('')
+        : '<div class="empty"><b>Nenhum documento</b></div>';
+      on($('#ld'), '[data-abrir]', 'click', (e) => abrirAnexo(docs.find((x) => x.id === e.currentTarget.dataset.abrir)));
+      on($('#ld'), '[data-del-anexo]', 'click', async (e) => { if (await excluirAnexo(docs.find((x) => x.id === e.currentTarget.dataset.delAnexo))) telaDocumentos(params); });
+    };
+    $('#bd').addEventListener('input', pintar);
+    $('#fc').addEventListener('change', (e) => { location.hash = '#/admin/documentos' + (e.target.value ? '?c=' + e.target.value : ''); });
+    $('#f-ret').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const fr = e.currentTarget;
+      const n = parseInt(fr.meses.value, 10);
+      if (!(n >= 1 && n <= 60)) return toast('Informe de 1 a 60 meses.', true);
+      const solta = travar($('button[type=submit]', fr), 'Salvando…');
+      const { error } = await sb.from('configuracoes').upsert([
+        { chave: 'retencao_meses', valor: n, atualizado_em: new Date().toISOString() },
+        { chave: 'retencao_automatica', valor: fr.auto.checked, atualizado_em: new Date().toISOString() }], { onConflict: 'chave' });
+      solta();
+      if (error) return toast(erroAmigavel(error), true);
+      toast('Retenção atualizada.'); telaDocumentos(params);
+    });
+    on(el, '[data-purgar]', 'click', async () => {
+      if (!(await confirmar('Excluir documentos vencidos', `${venc.length} documento(s) de candidatos não contratados serão excluídos definitivamente, conforme a política de retenção.`, 'Excluir', true))) return;
+      const n = await purgarVencidos(venc);
+      toast(`${n} documento(s) excluído(s).`, n < venc.length);
+      telaDocumentos(params);
+    });
+    pintar();
+  }
+
   // ------------------------------------------------------------------ auditoria
   async function telaAuditoria(params) {
     if (!isMaster()) return semAcesso();
@@ -1221,7 +1506,7 @@
     if (tab) q = q.eq('tabela', tab);
     const { data } = await q;
     const ls = data || [];
-    const NOMES = { vagas: 'Vagas', vaga_remuneracao: 'Remuneração', perfis: 'Usuários', unidades: 'Concessionárias', cargos: 'Cargos', departamentos: 'Departamentos', beneficios: 'Benefícios', vaga_anexos: 'Anexos' };
+    const NOMES = { vagas: 'Vagas', vaga_remuneracao: 'Remuneração', perfis: 'Usuários', unidades: 'Concessionárias', cargos: 'Cargos', departamentos: 'Departamentos', beneficios: 'Benefícios', vaga_anexos: 'Documentos', configuracoes: 'Configurações' };
     const ACAO = { INSERT: ['Criou', 'ok'], UPDATE: ['Alterou', 'info'], DELETE: ['Excluiu', 'bad'] };
     view().innerHTML = `<div class="page" style="max-width:900px"><div class="page-head"><div><h1>Auditoria</h1><small>Registro permanente de alterações (últimos 300)</small></div>
       <select class="input" id="ft" style="max-width:220px" aria-label="Filtrar"><option value="">Tudo</option>${Object.entries(NOMES).map(([k, l]) => `<option value="${k}" ${tab === k ? 'selected' : ''}>${l}</option>`).join('')}</select></div>

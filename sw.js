@@ -1,5 +1,5 @@
 // Service worker — guarda só a interface (nunca dados de vagas/usuários).
-const VERSAO = 'rh-gnl-v1';
+const VERSAO = 'rh-gnl-v2';
 const ARQUIVOS = [
   './', './index.html', './styles.css', './app.js', './config.js', './vendor/supabase.js',
   './manifest.webmanifest', './icons/icon-192.png', './icons/icon-512.png', './icons/favicon.png'
