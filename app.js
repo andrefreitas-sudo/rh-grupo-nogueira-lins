@@ -101,6 +101,10 @@
     copy: svg('<rect x="8" y="8" width="12" height="12" rx="2"/><path d="M16 8V5a1 1 0 00-1-1H5a1 1 0 00-1 1v10a1 1 0 001 1h3"/>'),
     clip: svg('<path d="M21 11l-8.5 8.5a5 5 0 01-7-7L14 4a3.5 3.5 0 015 5l-8.5 8.5a2 2 0 01-3-3L15 7"/>'),
     doc: svg('<path d="M14 3H6a1 1 0 00-1 1v16a1 1 0 001 1h12a1 1 0 001-1V8z"/><path d="M14 3v5h5M9 13h6M9 17h6"/>'),
+    swap: svg('<path d="M4 8h13l-3-3M20 16H7l3 3"/>'),
+    gear: svg('<circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 00.3 1.8l.1.1a2 2 0 11-2.8 2.8l-.1-.1a1.7 1.7 0 00-1.8-.3 1.7 1.7 0 00-1 1.5V21a2 2 0 11-4 0v-.1a1.7 1.7 0 00-1.1-1.5 1.7 1.7 0 00-1.8.3l-.1.1a2 2 0 11-2.8-2.8l.1-.1a1.7 1.7 0 00.3-1.8 1.7 1.7 0 00-1.5-1H3a2 2 0 110-4h.1a1.7 1.7 0 001.5-1.1 1.7 1.7 0 00-.3-1.8l-.1-.1a2 2 0 112.8-2.8l.1.1a1.7 1.7 0 001.8.3H9a1.7 1.7 0 001-1.5V3a2 2 0 114 0v.1a1.7 1.7 0 001 1.5 1.7 1.7 0 001.8-.3l.1-.1a2 2 0 112.8 2.8l-.1.1a1.7 1.7 0 00-.3 1.8V9a1.7 1.7 0 001.5 1H21a2 2 0 110 4h-.1a1.7 1.7 0 00-1.5 1z"/>'),
+    check: svg('<path d="M5 12l5 5L20 7"/>'),
+    mail: svg('<rect x="3" y="5" width="18" height="14" rx="2"/><path d="M3 7l9 6 9-6"/>'),
   };
 
   // ------------------------------------------------------------------ status
@@ -128,13 +132,43 @@
   const chipStatus = (s) => `<span class="chip ${ST[s]?.c || ''}">${esc(ST[s]?.l || s)}</span>`;
   const aberta = (v) => !FINAIS.includes(v.status) && v.status !== 'rascunho';
   const atrasada = (v) => aberta(v) && v.status !== 'suspensa' && v.prazo_sla && v.prazo_sla < hoje();
+  // Aprovação: diretor definido na concessionária; sem diretor, quem tem "aprovar" na unidade
+  const podeAprovarUni = (uid) => {
+    if (isMaster()) return true;
+    const u = uni(uid);
+    return u?.aprovador_id ? u.aprovador_id === S.me.id : !!S.me.pode_aprovar && temUnidade(uid);
+  };
+  const podeConduzir = (v) => isMaster() || (!!S.me.pode_alterar_status && temUnidade(v.unidade_id));
+
+  // Checklist de documentos da admissão (REV.03)
+  const ITENS_ADM = [
+    ['foto', 'Foto'], ['rg_cpf', 'RG / CPF'], ['cnh', 'CNH'], ['comprovante_endereco', 'Comprovante de endereço'],
+    ['ctps', 'CTPS'], ['pis', 'PIS'], ['conta_bancaria', 'Conta BB / Bradesco'], ['escolaridade', 'Escolaridade'],
+    ['certidao_nascimento', 'Certidão de nascimento'], ['rg_conjuge', 'RG do cônjuge', true], ['rg_filhos', 'RG dos filhos', true], ['aso', 'ASO'],
+  ];
+  const ITEM_ADM_L = Object.fromEntries(ITENS_ADM.map(([k, l]) => [k, l]));
+
+  // Outras solicitações (REV.03)
+  const ST_SOL = {
+    aguardando_aprovacao: { l: 'Aguardando aprovação', c: 'warn' },
+    devolvida: { l: 'Devolvida para ajuste', c: 'warn' },
+    reprovada: { l: 'Reprovada', c: 'bad' },
+    pendente_rh: { l: 'Com o RH', c: 'info' },
+    em_andamento: { l: 'Em andamento', c: 'violet' },
+    concluida: { l: 'Concluída', c: 'ok' },
+    cancelada: { l: 'Cancelada', c: 'bad' },
+  };
+  const FINAIS_SOL = ['concluida', 'cancelada', 'reprovada'];
+  const TIPOS_SOL = { alteracao_cargo: 'Alteração de cargo e/ou salário', geral: 'Solicitação geral' };
+  const chipSol = (s) => `<span class="chip ${ST_SOL[s]?.c || ''}">${esc(ST_SOL[s]?.l || s)}</span>`;
+  const tituloSol = (s) => (s.tipo === 'geral' ? s.titulo || 'Solicitação' : `Alteração de cargo/salário · ${s.colaborador_nome || ''}`);
 
   function transicoes(v) {
     const me = S.me, m = isMaster(), out = [];
     if (FINAIS.includes(v.status)) return out;
     const u = temUnidade(v.unidade_id);
     if (['rascunho', 'devolvida'].includes(v.status) && (v.solicitante_id === me.id || m)) out.push('aguardando_aprovacao');
-    if (v.status === 'aguardando_aprovacao' && (m || (me.pode_aprovar && u))) out.push('aprovada', 'devolvida', 'reprovada');
+    if (v.status === 'aguardando_aprovacao' && podeAprovarUni(v.unidade_id)) out.push('aprovada', 'devolvida', 'reprovada');
     if ((v.status === 'aprovada' || ETAPAS_RH.includes(v.status)) && (m || (me.pode_alterar_status && u))) ETAPAS_RH.forEach((s) => s !== v.status && out.push(s));
     if (m || (me.pode_alterar_status && u) || (v.solicitante_id === me.id && ['rascunho', 'aguardando_aprovacao', 'devolvida'].includes(v.status))) out.push('cancelada');
     return out;
@@ -274,6 +308,7 @@
   function itensMenu() {
     const me = S.me, it = [{ h: 'inicio', l: 'Início', i: I.home }, { h: 'vagas', l: 'Vagas', i: I.list }];
     if (me.pode_criar || isMaster()) it.push({ h: 'nova', l: 'Nova vaga', i: I.plus, cta: true });
+    it.push({ h: 'solicitacoes', l: 'Outras solicitações', i: I.swap, soLado: true }); // no celular fica em "Mais"
     it.push({ h: 'avisos', l: 'Avisos', i: I.bell, avisos: true });
     return it;
   }
@@ -281,14 +316,14 @@
     const it = [];
     if (isMaster()) it.push({ h: 'admin/usuarios', l: 'Usuários', i: I.users }, { h: 'admin/unidades', l: 'Concessionárias', i: I.building }, { h: 'admin/documentos', l: 'Documentos', i: I.doc });
     if (isMaster() || S.me.gerenciar_cadastros) it.push({ h: 'admin/cadastros', l: 'Cadastros', i: I.folder });
-    if (isMaster()) it.push({ h: 'auditoria', l: 'Auditoria', i: I.shield });
+    if (isMaster()) it.push({ h: 'admin/config', l: 'Configurações', i: I.gear }, { h: 'auditoria', l: 'Auditoria', i: I.shield });
     return it;
   }
 
   function montarApp() {
     const menu = itensMenu(), adm = itensAdmin();
     const lado = [...menu, ...adm, { h: 'conta', l: 'Minha conta', i: I.user }];
-    const baixo = [...menu, { h: 'mais', l: 'Mais', i: I.more }];
+    const baixo = [...menu.filter((x) => !x.soLado), { h: 'mais', l: 'Mais', i: I.more }];
     root.innerHTML = `
       <div class="app">
         <nav class="sidebar" aria-label="Menu">
@@ -342,7 +377,9 @@
     $$('.modal-back').forEach((m) => m.remove()); // janelas abertas não sobrevivem à troca de tela
     $$('[data-nav]').forEach((a) => {
       const n = a.dataset.nav;
-      a.classList.toggle('on', caminho === n || (n === 'vagas' && p[0] === 'vaga') || (n === 'mais' && ['conta', 'admin', 'auditoria', 'mais'].includes(p[0])));
+      const ehSol = ['solicitacoes', 'solicitacao', 'nova-solicitacao', 'editar-solicitacao'].includes(p[0]);
+      a.classList.toggle('on', caminho === n || (n === 'vagas' && p[0] === 'vaga') || (n === 'solicitacoes' && ehSol)
+        || (n === 'mais' && (ehSol || ['conta', 'admin', 'auditoria', 'mais'].includes(p[0]))));
     });
     window.scrollTo(0, 0);
     const r = {
@@ -351,10 +388,15 @@
       vaga: () => telaVaga(p[1]),
       nova: () => telaForm(null, params.get('dup')),
       editar: () => telaForm(p[1]),
+      solicitacoes: () => telaListaSol(params),
+      solicitacao: () => telaSol(p[1]),
+      'nova-solicitacao': () => telaFormSol(null, params.get('tipo')),
+      'editar-solicitacao': () => telaFormSol(p[1]),
       avisos: () => telaAvisos(),
       mais: () => telaMais(),
       conta: () => telaConta(),
-      admin: () => (p[1] === 'usuarios' ? telaUsuarios() : p[1] === 'unidades' ? telaUnidades() : p[1] === 'documentos' ? telaDocumentos(params) : telaCadastros(params)),
+      admin: () => (p[1] === 'usuarios' ? telaUsuarios() : p[1] === 'unidades' ? telaUnidades() : p[1] === 'documentos' ? telaDocumentos(params)
+        : p[1] === 'config' ? telaConfig() : telaCadastros(params)),
       auditoria: () => telaAuditoria(params),
     }[p[0]];
     (r || telaPainel)();
@@ -389,7 +431,7 @@
   // ------------------------------------------------------------------ painel
   async function telaPainel() {
     carregando();
-    const [vs, ru] = await Promise.all([buscarVagas(), isMaster() ? sb.rpc('uso_documentos') : Promise.resolve({})]);
+    const [vs, ru, sols] = await Promise.all([buscarVagas(), isMaster() ? sb.rpc('uso_documentos') : Promise.resolve({}), buscarSols()]);
     const usoPct = ru && ru.data ? (Number(ru.data.total) / LIMITE_TOTAL) * 100 : 0;
     const me = S.me;
     const abertas = vs.filter(aberta);
@@ -401,8 +443,11 @@
     const media = concl.length ? Math.round(concl.reduce((s, v) => s + diasEntre(v.aprovado_em, v.concluido_em), 0) / concl.length) : null;
 
     const paraMim = [];
-    if (me.pode_aprovar || isMaster()) aguard.filter((v) => temUnidade(v.unidade_id)).forEach((v) => paraMim.push(v));
+    aguard.filter((v) => podeAprovarUni(v.unidade_id)).forEach((v) => paraMim.push(v));
     vs.filter((v) => v.solicitante_id === me.id && ['rascunho', 'devolvida'].includes(v.status)).forEach((v) => paraMim.push(v));
+    const solMim = sols.filter((s) => (s.status === 'aguardando_aprovacao' && podeAprovarUni(s.unidade_id))
+      || (['pendente_rh', 'em_andamento'].includes(s.status) && podeConduzir(s))
+      || (s.status === 'devolvida' && s.solicitante_id === me.id));
 
     const porUni = {}; abertas.forEach((v) => { porUni[v.unidade_id] = (porUni[v.unidade_id] || 0) + 1; });
     const porSt = {}; abertas.forEach((v) => { porSt[v.status] = (porSt[v.status] || 0) + 1; });
@@ -429,6 +474,8 @@
         <b>Armazenamento de documentos em ${Math.round(usoPct)}%</b><br><small class="muted">O plano gratuito tem 1 GB. Revise a retenção ou considere o plano pago.</small></a>` : ''}
       ${paraMim.length ? `<div class="card" style="margin-top:12px"><div class="section-title"><h2>Precisa da sua ação</h2><span class="chip warn">${paraMim.length}</span></div>
         ${paraMim.slice(0, 6).map(itemVaga).join('')}</div>` : ''}
+      ${solMim.length ? `<div class="card" style="margin-top:12px"><div class="section-title"><h2>Outras solicitações pendentes</h2><a href="#/solicitacoes">Ver todas</a></div>
+        ${solMim.slice(0, 6).map(itemSol).join('')}</div>` : ''}
       <div class="grid two" style="margin-top:12px">
         <div class="card"><h2 style="margin-bottom:12px">Em aberto por unidade</h2>${barras(porUni, uniNome)}</div>
         <div class="card"><h2 style="margin-bottom:12px">Em aberto por etapa</h2>${barras(porSt, (k) => ST[k]?.l || k)}</div>
@@ -544,10 +591,12 @@
         if (p.arquivo.size > LIMITE_ARQ) throw new Error(`"${it.file.name}" tem ${fmtTam(p.arquivo.size)}; o limite é 5 MB.`);
         const ext = (p.nome.split('.').pop() || 'bin').toLowerCase().replace(/[^a-z0-9]/g, '').slice(0, 5) || 'bin';
         const caminho = `${vagaId}/${crypto.randomUUID()}.${ext}`;
-        const { data: row, error } = await sb.from('vaga_anexos').insert({
+        const reg = {
           vaga_id: vagaId, caminho, nome: p.nome.slice(0, 150), tamanho: p.arquivo.size, categoria: it.categoria,
           candidato: (it.candidato || '').trim().slice(0, 120) || null, contratado: !!it.contratado,
-        }).select('id').single();
+        };
+        if (it.admissao_id) { reg.admissao_id = it.admissao_id; reg.item_admissao = it.item_admissao || null; }
+        const { data: row, error } = await sb.from('vaga_anexos').insert(reg).select('id').single();
         if (error) throw error;
         const { error: eUp } = await sb.storage.from('anexos').upload(caminho, p.arquivo, { contentType: p.tipo, upsert: false });
         if (eUp) { await sb.from('vaga_anexos').delete().eq('id', row.id); throw eUp; }
@@ -640,7 +689,7 @@
         ${pode ? `<button class="btn sm primary" data-anexar>${I.clip} Anexar</button>` : ''}</div>
       ${grupos.length ? grupos.map(([k, l]) => `<div class="doc-group"><div class="doc-group-t"><span class="chip ${CATS[k].c}">${esc(CATS[k].l)}</span>${CATS[k].sens ? '<small class="muted">Restrito ao RH</small>' : ''}</div>
         ${l.map((a) => `<div class="list-row doc-row"><span class="doc-ic">${I.doc}</span><div class="grow"><b class="doc-name">${esc(a.nome)}</b>
-          <br><small>${a.candidato ? esc(a.candidato) + ' · ' : ''}${fmtTam(a.tamanho)} · ${fmtData(a.criado_em)}${a.autor_nome ? ' · ' + esc(a.autor_nome) : ''}</small>
+          <br><small>${a.item_admissao && ITEM_ADM_L[a.item_admissao] ? esc(ITEM_ADM_L[a.item_admissao]) + ' · ' : ''}${a.candidato ? esc(a.candidato) + ' · ' : ''}${fmtTam(a.tamanho)} · ${fmtData(a.criado_em)}${a.autor_nome ? ' · ' + esc(a.autor_nome) : ''}</small>
           ${a.contratado ? '<br><span class="chip ok plain" style="margin-top:4px">Contratado · não expira</span>' : ''}</div>
           <div class="doc-act"><button class="btn sm" data-abrir="${esc(a.id)}">Abrir</button>
           ${pode && COM_CANDIDATO.includes(k) ? `<button class="btn sm ghost" data-contr="${esc(a.id)}" title="${a.contratado ? 'Desmarcar' : 'Marcar como do contratado (não é excluído pela retenção)'}" aria-label="Marcar contratado">${a.contratado ? '★' : '☆'}</button>` : ''}
@@ -688,19 +737,135 @@
     if (n) toast(`${n} documento(s) com prazo de retenção vencido foram excluídos (LGPD).`);
   }
 
+  // ------------------------------------------------------------------ admissão: checklist de documentos (REV.03)
+  const arquivosItem = (anexos, adm, k) => anexos.filter((a) => a.admissao_id === adm.id && a.item_admissao === k);
+  const itemRecebido = (anexos, adm, k) => (adm.itens || {})[k] === true || arquivosItem(anexos, adm, k).length > 0;
+  const pendenciasAdm = (anexos, adm) => ITENS_ADM.filter(([k, , opc]) => !opc && !itemRecebido(anexos, adm, k)).map(([, l]) => l);
+
+  async function invocarEmail(vagaId, reenviar = false) {
+    const { data, error } = await sb.functions.invoke('avisos-email', { body: { acao: 'admissao_concluida', vaga_id: vagaId, reenviar } });
+    if (error) {
+      let msg = error.message;
+      try { const j = await error.context.json(); msg = j.erro || msg; } catch (_) { /* sem corpo */ }
+      throw new Error(msg);
+    }
+    if (data?.erro) throw new Error(data.erro);
+    return data;
+  }
+
+  function htmlAdmissoes(v, adms, anexos) {
+    const pode = podeConduzir(v) && !['cancelada', 'reprovada'].includes(v.status);
+    const obrig = ITENS_ADM.filter((x) => !x[2]).length;
+    const bloco = (a) => {
+      const pend = pendenciasAdm(anexos, a);
+      const ok = obrig - pend.length;
+      return `<div class="adm" data-adm="${esc(a.id)}">
+        <div class="adm-head"><div class="grow"><b>${esc(a.candidato)}</b><br>
+          <small class="muted">Admissão: ${fmtData(a.data_admissao)}${a.atualizado_por ? ` · atualizado por ${esc(a.atualizado_por)} em ${fmtDH(a.atualizado_em)}` : ''}</small></div>
+          <span class="chip ${pend.length ? 'warn' : 'ok'}">${ok}/${obrig} obrigatórios</span>
+          ${pode ? `<button class="btn sm ghost" data-adm-edit="${esc(a.id)}">Editar</button>` : ''}</div>
+        <div class="adm-list">${ITENS_ADM.map(([k, l, opc]) => {
+          const fs = arquivosItem(anexos, a, k), rec = itemRecebido(anexos, a, k);
+          return `<div class="adm-row ${rec ? 'ok' : ''}">
+            <label class="check adm-chk"><input type="checkbox" data-item="${k}" ${rec ? 'checked' : ''} ${!pode || fs.length ? 'disabled' : ''}>
+              <span>${esc(l)}${opc ? ' <small class="muted">(opcional)</small>' : ''}</span></label>
+            <div class="adm-files">${fs.map((f) => `<button class="btn sm ghost adm-file" data-abrir="${esc(f.id)}" title="${esc(f.nome)}">${I.doc}<span>${esc(f.nome)}</span></button>`).join('')}
+              ${pode ? `<label class="btn sm ghost" title="Anexar ${esc(l)}" aria-label="Anexar ${esc(l)}">${I.clip}<input type="file" class="hidden" multiple accept="${ACCEPT}" data-up="${k}"></label>` : ''}</div></div>`;
+        }).join('')}</div>
+        <div class="adm-adiant"><span>Adiantamento</span>
+          <div class="seg">${[['true', 'Sim'], ['false', 'Não']].map(([val, rot]) => `<label><input type="radio" name="adiant-${esc(a.id)}" value="${val}" data-adiant ${String(a.adiantamento) === val ? 'checked' : ''} ${pode ? '' : 'disabled'}><span>${rot}</span></label>`).join('')}</div></div>
+      </div>`;
+    };
+    const email = v.status === 'concluida' && podeConduzir(v) ? `<div class="adm-mail">${I.mail}<div class="grow">
+        <b>Aviso ao organograma</b><br><small class="muted">${v.email_organograma_em ? 'E-mail enviado em ' + fmtDH(v.email_organograma_em) : 'E-mail ainda não enviado'}</small></div>
+        <button class="btn sm" data-email>${v.email_organograma_em ? 'Reenviar' : 'Enviar agora'}</button></div>` : '';
+    return `<div class="card" id="card-adm"><div class="section-title"><h2>Admissão · documentos</h2>
+        ${pode ? `<button class="btn sm primary" data-adm-novo>${I.plus} Admitido</button>` : ''}</div>
+      ${adms.length ? adms.map(bloco).join('') : `<p class="muted" style="margin:0">Nenhum admitido registrado.${pode ? ' Adicione o candidato aprovado para controlar os documentos.' : ''}</p>`}
+      ${email}</div>`;
+  }
+
+  function modalAdmitido(v, a, depois) {
+    const m = modal(`<h2>${a ? 'Editar admitido' : 'Adicionar admitido'}</h2><p class="muted" style="margin-top:0">${esc(v.numero)} · ${esc(v.cargo_nome)}</p>
+      <form id="f-adm" class="form-grid" novalidate>
+        <label class="f"><span>Nome completo <em>*</em></span><input class="input" name="cand" maxlength="120" value="${esc(a?.candidato || '')}"></label>
+        <label class="f"><span>Data de admissão</span><input class="input" type="date" name="data" value="${esc(a?.data_admissao || '')}"></label>
+        <div class="actions">${a ? '<button type="button" class="btn ghost danger" data-del style="margin-right:auto">Excluir</button>' : ''}
+          <button type="button" class="btn" data-fechar>Cancelar</button><button class="btn primary" type="submit">Salvar</button></div></form>`);
+    const f = $('#f-adm', m.el);
+    f.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const dados = { candidato: f.cand.value.trim(), data_admissao: f.data.value || null };
+      if (!dados.candidato) return toast('Informe o nome.', true);
+      const solta = travar($('button[type=submit]', f), 'Salvando…');
+      const { error } = a ? await sb.from('vaga_admissoes').update(dados).eq('id', a.id)
+        : await sb.from('vaga_admissoes').insert({ ...dados, vaga_id: v.id });
+      if (error) { solta(); return toast(erroAmigavel(error), true); }
+      m.fechar(); toast('Admitido salvo.'); depois();
+    });
+    on(m.el, '[data-del]', 'click', async () => {
+      if (!(await confirmar('Excluir admitido', `Remover o checklist de ${a.candidato}? Os documentos anexados continuam na vaga.`, 'Excluir', true))) return;
+      const { error } = await sb.from('vaga_admissoes').delete().eq('id', a.id);
+      if (error) return toast(erroAmigavel(error), true);
+      m.fechar(); toast('Admitido removido.'); depois();
+    });
+  }
+
+  function ligarAdmissoes(el, v, adms, anexos, recarregar) {
+    if (!el) return;
+    on(el, '[data-adm-novo]', 'click', () => modalAdmitido(v, null, recarregar));
+    on(el, '[data-adm-edit]', 'click', (e) => modalAdmitido(v, adms.find((a) => a.id === e.currentTarget.dataset.admEdit), recarregar));
+    on(el, '[data-abrir]', 'click', (e) => abrirAnexo(anexos.find((x) => x.id === e.currentTarget.dataset.abrir)));
+    on(el, '[data-item]', 'change', async (e) => {
+      const cb = e.currentTarget, a = adms.find((x) => x.id === cb.closest('[data-adm]').dataset.adm);
+      const itens = { ...(a.itens || {}), [cb.dataset.item]: cb.checked };
+      const { error } = await sb.from('vaga_admissoes').update({ itens }).eq('id', a.id);
+      if (error) { cb.checked = !cb.checked; return toast(erroAmigavel(error), true); }
+      a.itens = itens;
+      const pend = pendenciasAdm(anexos, a), obrig = ITENS_ADM.filter((x) => !x[2]).length;
+      const chip = $('.adm-head .chip', cb.closest('[data-adm]'));
+      chip.textContent = `${obrig - pend.length}/${obrig} obrigatórios`;
+      chip.className = 'chip ' + (pend.length ? 'warn' : 'ok');
+      cb.closest('.adm-row').classList.toggle('ok', cb.checked);
+    });
+    on(el, '[data-adiant]', 'change', async (e) => {
+      const r = e.currentTarget, a = adms.find((x) => x.id === r.closest('[data-adm]').dataset.adm);
+      const { error } = await sb.from('vaga_admissoes').update({ adiantamento: r.value === 'true' }).eq('id', a.id);
+      if (error) return toast(erroAmigavel(error), true);
+      toast('Adiantamento registrado.');
+    });
+    on(el, '[data-up]', 'change', async (e) => {
+      const inp = e.currentTarget, k = inp.dataset.up, a = adms.find((x) => x.id === inp.closest('[data-adm]').dataset.adm);
+      const files = Array.from(inp.files || []);
+      if (!files.length) return;
+      toast('Enviando…');
+      const n = await enviarAnexos(v.id, files.map((file) => ({ file, categoria: 'admissao', candidato: a.candidato, contratado: true, admissao_id: a.id, item_admissao: k })));
+      if (n && (a.itens || {})[k] !== true) await sb.from('vaga_admissoes').update({ itens: { ...(a.itens || {}), [k]: true } }).eq('id', a.id);
+      recarregar();
+    });
+    on(el, '[data-email]', 'click', async (e) => {
+      const solta = travar(e.currentTarget, 'Enviando…');
+      try { const r = await invocarEmail(v.id, true); toast(`E-mail enviado para ${r.enviados} destinatário(s).`); recarregar(); }
+      catch (err) { solta(); toast(erroAmigavel(err), true); }
+    });
+  }
+
   // ------------------------------------------------------------------ detalhe
   async function telaVaga(id) {
     carregando();
-    const [rv, rr, rh, rc, ra] = await Promise.all([
+    const [rv, rr, rh, rc, ra, rad] = await Promise.all([
       sb.from('vagas').select('*').eq('id', id).maybeSingle(),
       sb.from('vaga_remuneracao').select('*').eq('vaga_id', id).maybeSingle(),
       sb.from('vaga_historico').select('*').eq('vaga_id', id).order('criado_em', { ascending: false }),
       sb.from('vaga_comentarios').select('*').eq('vaga_id', id).order('criado_em'),
       sb.from('vaga_anexos').select('*').eq('vaga_id', id).order('criado_em'),
+      sb.from('vaga_admissoes').select('*').eq('vaga_id', id).order('criado_em'),
     ]);
     const v = rv.data;
     if (!v) { view().innerHTML = `<div class="page"><div class="empty"><b>Vaga não encontrada</b>Ela não existe ou você não tem acesso a ela.</div></div>`; return; }
-    const r = rr.data, hist = rh.data || [], coms = rc.data || [], anexos = ra.data || [];
+    const r = rr.data, hist = rh.data || [], coms = rc.data || [], anexos = ra.data || [], adms = rad.data || [];
+    v._adms = adms; v._anexos = anexos;
+    const mostraAdm = ['admissao', 'concluida'].includes(v.status) || adms.length > 0;
     const me = S.me, m = isMaster();
     const trans = transicoes(v);
     const podeEditar = ['rascunho', 'devolvida'].includes(v.status) && (v.solicitante_id === me.id || m);
@@ -733,6 +898,7 @@
         <dl class="dl" style="margin-top:14px">
           ${item('Unidade', esc(uniNome(v.unidade_id)))}${item('Departamento', esc(depNome(v.departamento_id)))}
           ${item('Solicitante', txt(v.solicitante_nome))}${item('Aberta em', fmtDH(v.criado_em))}
+          ${v.status === 'aguardando_aprovacao' && uni(v.unidade_id)?.aprovador_nome ? item('Aprovação com', txt(uni(v.unidade_id).aprovador_nome)) : ''}
           ${v.aprovado_em ? item('Aprovada por', `${txt(v.aprovador_nome)} em ${fmtData(v.aprovado_em)}`) : ''}
           ${v.prazo_sla ? item('Prazo (SLA)', `<span class="${atr ? 'overdue' : ''}">${fmtData(v.prazo_sla)}</span> · ${v.sla_dias} dias`) : item('SLA do cargo', `${v.sla_dias || '—'} dias após aprovação`)}
           ${v.status === 'concluida' ? item('Contratado(s)', txt(v.contratado_nome)) + item('Data de admissão', fmtData(v.data_admissao)) : ''}
@@ -786,6 +952,7 @@
                 ${verInternos ? '<label class="check" style="padding:0"><input type="checkbox" name="interno"> Interno (só RH)</label>' : '<span></span>'}
                 <button class="btn primary sm" type="submit">Comentar</button></div></form>` : ''}
           </div>
+          ${mostraAdm ? htmlAdmissoes(v, adms, anexos) : ''}
           ${htmlDocumentos(v, anexos)}
         </div>
       </div></div>`;
@@ -811,6 +978,7 @@
       telaVaga(v.id);
     });
     ligarDocumentos($('#card-docs', el), v, anexos, () => telaVaga(v.id));
+    ligarAdmissoes($('#card-adm', el), v, adms, anexos, () => telaVaga(v.id));
     on(el, '[data-anexar-topo]', 'click', () => $('#card-docs [data-anexar]', el).click());
   }
 
@@ -825,9 +993,13 @@
       ${opcoes.length > 1 ? `<div class="f"><span style="display:block;font-size:13px;font-weight:600;margin-bottom:8px">Novo status</span>
         <div class="seg">${opcoes.map((o, i) => `<label><input type="radio" name="st" value="${o}" ${i === 0 ? 'checked' : ''}><span>${esc(ST[o].l)}</span></label>`).join('')}</div></div>`
         : `<input type="hidden" name="st" value="${opcoes[0]}"><div>${chipStatus(v.status)} → ${chipStatus(opcoes[0])}</div>`}
+      <div id="st-admi" class="form-grid hidden">
+        <label class="f"><span>Candidato aprovado</span><input class="input" name="cand_adm" maxlength="120" placeholder="Nome completo — abre o checklist de documentos">
+        <div class="hint">Se houver mais de um admitido, adicione os demais pelo quadro “Admissão · documentos”.</div></label></div>
       <div id="st-conc" class="form-grid hidden">
-        <label class="f"><span>Contratado(s) <em>*</em></span><input class="input" name="contratado" maxlength="300" placeholder="Nome completo"></label>
-        <label class="f"><span>Data de admissão</span><input class="input" type="date" name="adm"></label></div>
+        <label class="f"><span>Contratado(s) <em>*</em></span><input class="input" name="contratado" maxlength="300" placeholder="Nome completo" value="${esc((v._adms || []).map((a) => a.candidato).join(', '))}"></label>
+        <label class="f"><span>Data de admissão</span><input class="input" type="date" name="adm" value="${esc((v._adms || []).find((a) => a.data_admissao)?.data_admissao || '')}"></label>
+        <div class="hint">Ao concluir, o aviso de admissão é enviado por e-mail para atualização do organograma.</div></div>
       <label class="f"><span id="st-lbl">Comentário</span><textarea class="input" name="com" maxlength="2000" placeholder="Visível para o solicitante e gestores autorizados"></textarea></label>
       ${pa ? `<div id="st-anx">${pa.html}</div>` : ''}
       <div class="actions"><button type="button" class="btn" data-fechar>Voltar</button><button class="btn primary" type="submit">Confirmar</button></div></form>`, { wide: !!pa });
@@ -837,6 +1009,7 @@
     const ajustar = () => {
       const s = sel();
       $('#st-conc', m.el).classList.toggle('hidden', s !== 'concluida');
+      $('#st-admi', m.el).classList.toggle('hidden', s !== 'admissao');
       $('#st-lbl', m.el).innerHTML = PEDE_MOTIVO.includes(s) ? 'Motivo <em>*</em>' : 'Comentário';
       if (pa) { $('#st-anx', m.el).classList.toggle('hidden', !CAT_ETAPA[s]); if (CAT_ETAPA[s]) pa.definirCategoria(m.el, CAT_ETAPA[s]); }
     };
@@ -846,13 +1019,26 @@
       const s = sel(), com = f.com.value.trim();
       if (PEDE_MOTIVO.includes(s) && !com) return toast('Informe o motivo.', true);
       if (s === 'concluida' && !f.contratado.value.trim()) return toast('Informe o nome do(s) contratado(s).', true);
+      if (s === 'concluida') {
+        const pend = (v._adms || []).map((a) => [a.candidato, pendenciasAdm(v._anexos || [], a)]).filter(([, p]) => p.length);
+        if (pend.length && !(await confirmar('Documentos pendentes', `Ainda faltam documentos obrigatórios: ${pend.map(([n, p]) => `${n} — ${p.join(', ')}`).join('; ')}. Concluir mesmo assim?`, 'Concluir mesmo assim'))) return;
+      }
       const solta = travar($('button[type=submit]', f), 'Salvando…');
       const { error } = await sb.rpc('mudar_status', { p_vaga: v.id, p_status: s, p_comentario: com || null,
         p_contratado: s === 'concluida' ? f.contratado.value.trim() : null, p_data_admissao: s === 'concluida' && f.adm.value ? f.adm.value : null });
       if (error) { solta(); return toast(erroAmigavel(error), true); }
+      const cand = s === 'admissao' ? f.cand_adm.value.trim() : '';
+      if (cand && !(v._adms || []).some((a) => a.candidato.toLowerCase() === cand.toLowerCase())) {
+        const { error: ea } = await sb.from('vaga_admissoes').insert({ vaga_id: v.id, candidato: cand });
+        if (ea) toast('Status atualizado, mas o checklist não foi criado: ' + erroAmigavel(ea), true);
+      }
       let itens = pa && CAT_ETAPA[s] ? pa.itens(m.el) : [];
       if (s === 'concluida') itens = itens.map((it) => ({ ...it, candidato: it.candidato || f.contratado.value.trim(), contratado: COM_CANDIDATO.includes(it.categoria) }));
       if (itens.length) await enviarAnexos(v.id, itens); else toast('Status atualizado.');
+      if (s === 'concluida') {
+        try { const r = await invocarEmail(v.id); if (r?.enviados) toast(`Vaga concluída. Aviso de admissão enviado para ${r.enviados} e-mail(s).`); }
+        catch (err) { toast('Vaga concluída, mas o e-mail do organograma não foi enviado: ' + erroAmigavel(err), true); }
+      }
       solta(); m.fechar(); telaVaga(v.id);
     });
   }
@@ -1134,6 +1320,265 @@
     desenhar();
   }
 
+  // ------------------------------------------------------------------ outras solicitações (REV.03)
+  async function buscarSols() {
+    const { data, error } = await sb.from('solicitacoes')
+      .select('id,numero,tipo,status,unidade_id,solicitante_id,solicitante_nome,colaborador_nome,titulo,criado_em,atualizado_em,concluido_em')
+      .order('atualizado_em', { ascending: false }).limit(2000);
+    return error ? [] : data || [];
+  }
+
+  function itemSol(s) {
+    return `<a class="vaga-item" href="#/solicitacao/${esc(s.id)}">
+      <div class="top"><div><div class="num">${esc(s.numero)} · ${esc(TIPOS_SOL[s.tipo])}</div>
+        <h3 style="margin-top:2px">${esc(tituloSol(s))}</h3></div>${chipSol(s.status)}</div>
+      <div class="meta"><span>${esc(uniNome(s.unidade_id))}</span><span>Solicitante: ${esc(s.solicitante_nome || '—')}</span>
+        <span>Aberta em ${fmtData(s.criado_em)}</span></div></a>`;
+  }
+
+  function escolherTipoSol() {
+    const m = modal(`<h2>Nova solicitação</h2><p class="muted" style="margin-top:0">Qual tipo de solicitação?</p>
+      <div class="form-grid">
+        <a class="list-row card tipo-sol" href="#/nova-solicitacao?tipo=alteracao_cargo" style="color:inherit">${I.swap}<div class="grow"><b>Alteração de cargo e/ou salário</b><br><small>Promoção, mudança de função, reajuste ou troca de centro de custo. Passa pela aprovação da diretoria.</small></div>›</a>
+        <a class="list-row card tipo-sol" href="#/nova-solicitacao?tipo=geral" style="color:inherit">${I.doc}<div class="grow"><b>Solicitação geral</b><br><small>Qualquer outro pedido ao RH. Vai direto para o RH.</small></div>›</a>
+      </div><div class="actions"><button class="btn" data-fechar>Cancelar</button></div>`);
+    return m;
+  }
+
+  async function telaListaSol(params) {
+    carregando();
+    const ss = await buscarSols();
+    const f = { q: '', u: '', t: '', f: params.get('f') || 'abertas' };
+    const unis = S.unidades.filter((u) => ss.some((s) => s.unidade_id === u.id));
+    const podeCriar = S.me.pode_criar || isMaster();
+    view().innerHTML = `<div class="page">
+      <div class="page-head"><div><h1>Outras solicitações</h1><small>Alteração de cargo/salário e solicitações gerais ao RH</small></div>
+        ${podeCriar ? `<button class="btn sm primary" data-nova-sol>${I.plus} Nova</button>` : ''}</div>
+      <div class="filters">
+        <input class="input" type="search" placeholder="Buscar nº, colaborador, título ou solicitante" data-k="q" aria-label="Buscar">
+        <select class="input" data-k="f" aria-label="Situação"><option value="abertas">Em aberto</option><option value="todas">Todas</option>
+          <optgroup label="Status">${Object.entries(ST_SOL).map(([k, s]) => `<option value="${k}">${esc(s.l)}</option>`).join('')}</optgroup></select>
+        <select class="input" data-k="t" aria-label="Tipo"><option value="">Todos os tipos</option>${Object.entries(TIPOS_SOL).map(([k, l]) => `<option value="${k}">${esc(l)}</option>`).join('')}</select>
+        <select class="input" data-k="u" aria-label="Unidade"><option value="">Todas as unidades</option>${unis.map((u) => `<option value="${u.id}">${esc(u.nome)}</option>`).join('')}</select>
+      </div><div id="lista"></div></div>`;
+    $('[data-k=f]').value = f.f;
+    const pintar = () => {
+      const q = f.q.toLowerCase();
+      const r = ss.filter((s) => (f.f === 'todas' || (f.f === 'abertas' && !FINAIS_SOL.includes(s.status)) || s.status === f.f)
+        && (!f.t || s.tipo === f.t) && (!f.u || s.unidade_id === f.u)
+        && (!q || [s.numero, s.colaborador_nome, s.titulo, s.solicitante_nome].join(' ').toLowerCase().includes(q)));
+      $('#lista').innerHTML = r.length ? `<small class="muted">${r.length} solicitação(ões)</small><div style="margin-top:8px">${r.map(itemSol).join('')}</div>`
+        : `<div class="empty"><b>Nenhuma solicitação encontrada</b>${podeCriar && !ss.length ? 'Use “Nova” para pedir uma alteração de cargo/salário ou outra solicitação ao RH.' : 'Ajuste os filtros para ver outras solicitações.'}</div>`;
+    };
+    $$('[data-k]').forEach((el) => el.addEventListener('input', () => { f[el.dataset.k] = el.value; pintar(); }));
+    on(view(), '[data-nova-sol]', 'click', escolherTipoSol);
+    pintar();
+    if (params.get('nova') && podeCriar) escolherTipoSol();
+  }
+
+  function transicoesSol(s) {
+    const me = S.me, out = [];
+    if (FINAIS_SOL.includes(s.status)) return out;
+    const rh = podeConduzir(s), dono = s.solicitante_id === me.id || isMaster();
+    if (s.status === 'aguardando_aprovacao' && podeAprovarUni(s.unidade_id)) out.push('pendente_rh', 'devolvida', 'reprovada');
+    if (s.status === 'pendente_rh' && rh) out.push('em_andamento', 'concluida', 'devolvida');
+    if (s.status === 'em_andamento' && rh) out.push('concluida', 'devolvida');
+    if (rh || (dono && ['aguardando_aprovacao', 'devolvida', 'pendente_rh'].includes(s.status))) out.push('cancelada');
+    return out;
+  }
+
+  const ROT_ACAO_SOL = { pendente_rh: 'Aprovar', devolvida: 'Devolver', reprovada: 'Reprovar', em_andamento: 'Iniciar atendimento', concluida: 'Concluir', cancelada: 'Cancelar solicitação' };
+
+  async function telaSol(id) {
+    carregando();
+    const [rs, rsal, rh] = await Promise.all([
+      sb.from('solicitacoes').select('*').eq('id', id).maybeSingle(),
+      sb.from('solicitacao_salarios').select('*').eq('solicitacao_id', id).maybeSingle(),
+      sb.from('solicitacao_historico').select('*').eq('solicitacao_id', id).order('criado_em', { ascending: false }),
+    ]);
+    const s = rs.data;
+    if (!s) { view().innerHTML = `<div class="page"><div class="empty"><b>Solicitação não encontrada</b>Ela não existe ou você não tem acesso a ela.</div></div>`; return; }
+    const sal = rsal.data, hist = rh.data || [];
+    const trans = transicoesSol(s);
+    const podeEditar = s.status === 'devolvida' && (s.solicitante_id === S.me.id || isMaster());
+    const item = (rot, val, full) => `<div class="${full ? 'full' : ''}"><dt>${esc(rot)}</dt><dd>${val}</dd></div>`;
+    const btn = (st) => `<button class="btn ${['pendente_rh', 'concluida', 'em_andamento'].includes(st) ? 'primary' : ['reprovada'].includes(st) ? 'danger' : st === 'cancelada' ? 'danger ghost' : ''}" data-st="${st}">${ROT_ACAO_SOL[st]}</button>`;
+    const dif = sal && sal.salario_atual && sal.salario_novo ? ((sal.salario_novo / sal.salario_atual - 1) * 100) : null;
+    view().innerHTML = `<div class="page">
+      <div class="page-head"><a class="btn ghost sm" href="#/solicitacoes">${I.back} Solicitações</a></div>
+      <div class="grid two" style="align-items:start">
+        <div>
+          <div class="card">
+            <div class="num muted" style="font-size:12.5px;font-weight:600">${esc(s.numero)} · ${esc(TIPOS_SOL[s.tipo])}</div>
+            <h1 style="margin:4px 0 10px">${esc(s.tipo === 'geral' ? s.titulo : s.colaborador_nome)}</h1>
+            <div class="actions" style="gap:6px">${chipSol(s.status)}</div>
+            <dl class="dl" style="margin-top:14px">
+              ${item('Unidade', esc(uniNome(s.unidade_id)))}${item('Solicitante', txt(s.solicitante_nome))}
+              ${item('Aberta em', fmtDH(s.criado_em))}
+              ${s.status === 'aguardando_aprovacao' && uni(s.unidade_id)?.aprovador_nome ? item('Aprovação com', txt(uni(s.unidade_id).aprovador_nome)) : ''}
+              ${s.aprovado_em ? item('Aprovada por', `${txt(s.aprovador_nome)} em ${fmtData(s.aprovado_em)}`) : ''}
+              ${s.concluido_em ? item('Encerrada em', fmtDH(s.concluido_em)) : ''}
+            </dl>
+            ${trans.length || podeEditar ? `<div class="actions" style="margin-top:16px">
+              ${podeEditar ? `<a class="btn primary" href="#/editar-solicitacao/${esc(s.id)}">Ajustar e reenviar</a>` : ''}
+              ${trans.map(btn).join('')}</div>` : ''}
+          </div>
+          ${s.tipo === 'alteracao_cargo' ? `<div class="card"><h2 style="margin-bottom:12px">Alteração solicitada</h2><dl class="dl">
+            ${item('Colaborador', txt(s.colaborador_nome), true)}
+            ${item('Cargo atual', txt(s.cargo_atual))}${item('Cargo alterado', s.cargo_novo ? txt(s.cargo_novo) : '<span class="muted">Sem alteração</span>')}
+            ${sal ? item('Salário atual', money(sal.salario_atual)) + item('Salário alterado', sal.salario_novo ? money(sal.salario_novo) + (dif !== null ? ` <small class="muted">(${dif >= 0 ? '+' : ''}${dif.toFixed(1).replace('.', ',')}%)</small>` : '') : '<span class="muted">Sem alteração</span>') : ''}
+            ${item('Centro de custo terá alteração', s.altera_centro_custo ? `Sim · novo: ${txt(s.centro_custo_novo)}` : simNao(s.altera_centro_custo))}
+            ${item('Motivo da alteração', txt(s.motivo), true)}</dl></div>`
+          : `<div class="card"><h2 style="margin-bottom:12px">Solicitação</h2><dl class="dl">
+            ${item('Título', txt(s.titulo), true)}${item('Motivo da solicitação', txt(s.motivo), true)}</dl></div>`}
+        </div>
+        <div><div class="card"><h2 style="margin-bottom:14px">Linha do tempo</h2>
+          <ul class="timeline">${hist.map((h) => `<li><div>${chipSol(h.status_para)}</div>
+            <div class="when">${fmtDH(h.criado_em)} · ${esc(h.autor_nome || '—')}</div>
+            ${h.comentario ? `<div class="c">${esc(h.comentario)}</div>` : ''}</li>`).join('')}</ul></div></div>
+      </div></div>`;
+    on(view(), '[data-st]', 'click', (e) => modalStatusSol(s, e.currentTarget.dataset.st));
+  }
+
+  function modalStatusSol(s, alvo) {
+    const motivo = ['devolvida', 'reprovada', 'cancelada'].includes(alvo);
+    const m = modal(`<h2>${esc(ROT_ACAO_SOL[alvo])}</h2><p class="muted" style="margin-top:0">${esc(s.numero)} · ${esc(tituloSol(s))}</p>
+      <form id="f-sst" class="form-grid" novalidate><div>${chipSol(s.status)} → ${chipSol(alvo)}</div>
+      <label class="f"><span>${motivo ? 'Motivo <em>*</em>' : 'Comentário'}</span><textarea class="input" name="com" maxlength="2000" placeholder="${alvo === 'concluida' ? 'Ex.: alteração lançada na folha a partir de...' : 'Visível para o solicitante e gestores autorizados'}"></textarea></label>
+      <div class="actions"><button type="button" class="btn" data-fechar>Voltar</button><button class="btn primary" type="submit">Confirmar</button></div></form>`);
+    const f = $('#f-sst', m.el);
+    f.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const com = f.com.value.trim();
+      if (motivo && !com) return toast('Informe o motivo.', true);
+      const solta = travar($('button[type=submit]', f), 'Salvando…');
+      const { error } = await sb.rpc('mudar_status_solicitacao', { p_id: s.id, p_status: alvo, p_comentario: com || null });
+      if (error) { solta(); return toast(erroAmigavel(error), true); }
+      m.fechar(); toast('Solicitação atualizada.'); telaSol(s.id);
+    });
+  }
+
+  async function telaFormSol(id, tipoNovo) {
+    const me = S.me;
+    if (!id && !(me.pode_criar || isMaster())) return semAcesso();
+    carregando();
+    let s = { tipo: TIPOS_SOL[tipoNovo] ? tipoNovo : null }, sal = {};
+    if (id) {
+      const [rs, rsal] = await Promise.all([sb.from('solicitacoes').select('*').eq('id', id).maybeSingle(), sb.from('solicitacao_salarios').select('*').eq('solicitacao_id', id).maybeSingle()]);
+      if (!rs.data) return semAcesso();
+      if (!(rs.data.status === 'devolvida' && (rs.data.solicitante_id === me.id || isMaster()))) {
+        view().innerHTML = `<div class="page"><div class="empty"><b>Edição indisponível</b>Só é possível ajustar solicitações devolvidas.</div></div>`; return;
+      }
+      s = rs.data; sal = rsal.data || {};
+    }
+    if (!s.tipo) { location.hash = '#/solicitacoes?nova=1'; return; }
+    const unis = minhasUnidades();
+    if (!s.unidade_id && unis.length === 1) s.unidade_id = unis[0].id;
+    const alt = s.tipo === 'alteracao_cargo';
+    const campo = (rot, html, obrig, extra = '') => `<label class="f ${extra}"><span>${esc(rot)}${obrig ? ' <em>*</em>' : ''}</span>${html}</label>`;
+    const inp = (k, o = {}) => `<input class="input" name="${k}" value="${esc(o.v ?? s[k] ?? '')}" maxlength="${o.max || 120}" ${o.ph ? `placeholder="${esc(o.ph)}"` : ''} ${o.list ? `list="${o.list}"` : ''}>`;
+    const din = (k) => `<input class="input" name="${k}" type="number" inputmode="decimal" step="0.01" min="0" value="${esc(sal[k] ?? '')}">`;
+    view().innerHTML = `<div class="page" style="max-width:760px">
+      <div class="page-head"><a class="btn ghost sm" href="${id ? '#/solicitacao/' + esc(id) : '#/solicitacoes'}">${I.back} ${id ? 'Voltar' : 'Cancelar'}</a>
+        <small class="muted">${id ? esc(s.numero) + ' · ajustando' : 'Nova solicitação'}</small></div>
+      <div class="step-title"><h1>${esc(TIPOS_SOL[s.tipo])}</h1><small class="muted">${alt ? 'Segue para aprovação da diretoria e depois para o RH.' : 'Segue direto para o RH.'}</small></div>
+      <form id="f-sol" novalidate><div class="card"><div class="form-grid cols-2">
+        ${campo('Concessionária / unidade', `<select class="input" name="unidade_id" ${id ? 'disabled' : ''}><option value="">Selecione</option>${(id ? S.unidades.filter((u) => u.id === s.unidade_id) : unis).map((u) => `<option value="${u.id}" ${u.id === s.unidade_id ? 'selected' : ''}>${esc(u.nome)}</option>`).join('')}</select>`, true, 'span-2')}
+        ${alt ? `
+          ${campo('Nome do colaborador', inp('colaborador_nome'), true, 'span-2')}
+          ${campo('Motivo da alteração', `<textarea class="input" name="motivo" maxlength="2000" placeholder="Ex.: promoção por desempenho, reenquadramento, mudança de função">${esc(s.motivo || '')}</textarea>`, true, 'span-2')}
+          ${campo('Cargo que está', inp('cargo_atual', { list: 'dl-cargos' }), true)}
+          ${campo('Cargo alterado', inp('cargo_novo', { list: 'dl-cargos', ph: 'Deixe vazio se não muda' }))}
+          ${campo('Salário atual (R$)', din('salario_atual'))}
+          ${campo('Salário alterado (R$)', din('salario_novo'))}
+          <div class="f span-2"><span style="display:block;font-size:13px;font-weight:600;margin-bottom:8px">Centro de custo terá alteração? <em>*</em></span>
+            <div class="seg">${[['true', 'Sim'], ['false', 'Não']].map(([v, l]) => `<label><input type="radio" name="altera_centro_custo" value="${v}" ${String(s.altera_centro_custo) === v ? 'checked' : ''}><span>${l}</span></label>`).join('')}</div></div>
+          <div class="span-2 ${s.altera_centro_custo ? '' : 'hidden'}" id="cc-novo">${campo('Novo centro de custo', inp('centro_custo_novo', { max: 60 }), true)}</div>
+          <datalist id="dl-cargos">${S.cargos.filter((c) => c.ativo).map((c) => `<option value="${esc(c.nome)}">`).join('')}</datalist>
+          <p class="hint span-2" style="margin:0">Salários ficam visíveis apenas para você, para a diretoria que aprova e para quem tem permissão de ver salários.</p>`
+        : `
+          ${campo('Título da solicitação', inp('titulo', { max: 150, ph: 'Ex.: Troca de uniforme, ajuste de jornada, declaração' }), true, 'span-2')}
+          ${campo('Motivo da solicitação', `<textarea class="input" name="motivo" maxlength="2000">${esc(s.motivo || '')}</textarea>`, true, 'span-2')}`}
+      </div></div>
+      <div class="wizard-foot"><span></span><button type="submit" class="btn primary">${id ? 'Reenviar' : alt ? 'Enviar para aprovação' : 'Enviar ao RH'}</button></div></form></div>`;
+    const f = $('#f-sol');
+    on(f, 'input[name=altera_centro_custo]', 'change', (e) => $('#cc-novo').classList.toggle('hidden', e.target.value !== 'true'));
+    f.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const val = (k) => (f[k] ? f[k].value.trim() : '') || null;
+      const unidade_id = id ? s.unidade_id : val('unidade_id');
+      const d = { motivo: val('motivo') };
+      let salario = null;
+      if (!unidade_id) return toast('Selecione a unidade.', true);
+      if (alt) {
+        Object.assign(d, { colaborador_nome: val('colaborador_nome'), cargo_atual: val('cargo_atual'), cargo_novo: val('cargo_novo') });
+        const cc = f.querySelector('input[name=altera_centro_custo]:checked');
+        d.altera_centro_custo = cc ? cc.value === 'true' : null;
+        d.centro_custo_novo = d.altera_centro_custo ? val('centro_custo_novo') : null;
+        const sa = val('salario_atual'), sn = val('salario_novo');
+        salario = { salario_atual: sa === null ? null : Number(sa), salario_novo: sn === null ? null : Number(sn) };
+        if (!d.colaborador_nome) return toast('Informe o nome do colaborador.', true);
+        if (!d.motivo) return toast('Informe o motivo da alteração.', true);
+        if (!d.cargo_atual) return toast('Informe o cargo atual.', true);
+        if (d.altera_centro_custo === null) return toast('Informe se o centro de custo terá alteração.', true);
+        if (d.altera_centro_custo && !d.centro_custo_novo) return toast('Informe o novo centro de custo.', true);
+        if (!d.cargo_novo && salario.salario_novo === null && !d.altera_centro_custo) return toast('Informe o cargo alterado e/ou o salário alterado.', true);
+        if (d.cargo_novo && d.cargo_novo.toLowerCase() === d.cargo_atual.toLowerCase()) return toast('O cargo alterado é igual ao atual.', true);
+      } else {
+        d.titulo = val('titulo');
+        if (!d.titulo) return toast('Informe o título.', true);
+        if (!d.motivo) return toast('Informe o motivo.', true);
+      }
+      const solta = travar($('button[type=submit]', f), 'Enviando…');
+      let solId = id;
+      if (id) {
+        const { error } = await sb.from('solicitacoes').update(d).eq('id', id);
+        if (error) { solta(); return toast(erroAmigavel(error), true); }
+      } else {
+        const { data, error } = await sb.from('solicitacoes').insert({ ...d, tipo: s.tipo, unidade_id }).select('id').single();
+        if (error) { solta(); return toast(erroAmigavel(error), true); }
+        solId = data.id;
+      }
+      if (salario && (id || salario.salario_atual !== null || salario.salario_novo !== null)) {
+        const { error: es } = await sb.from('solicitacao_salarios').upsert({ solicitacao_id: solId, ...salario }, { onConflict: 'solicitacao_id' });
+        if (es) toast('Solicitação salva, mas os salários não puderam ser gravados: ' + erroAmigavel(es), true);
+      }
+      if (id) {
+        const { error: er } = await sb.rpc('mudar_status_solicitacao', { p_id: id, p_status: alt ? 'aguardando_aprovacao' : 'pendente_rh', p_comentario: 'Ajustes realizados e reenviada.' });
+        if (er) { solta(); location.hash = '#/solicitacao/' + id; return toast(erroAmigavel(er), true); }
+      }
+      toast(alt ? 'Solicitação enviada para aprovação.' : 'Solicitação enviada ao RH.');
+      location.hash = '#/solicitacao/' + solId;
+    });
+  }
+
+  // ------------------------------------------------------------------ administração: configurações (REV.03)
+  function telaConfig() {
+    if (!isMaster()) return semAcesso();
+    const emails = Array.isArray(S.config.emails_admissao) ? S.config.emails_admissao : [];
+    view().innerHTML = `<div class="page" style="max-width:760px"><div class="page-head"><h1>Configurações</h1></div>
+      <div class="card"><h2 style="margin-bottom:6px">${I.mail} Aviso de admissão concluída</h2>
+        <p class="muted" style="margin:0 0 12px">Quando o RH conclui uma vaga, o sistema envia um e-mail com os dados do(s) admitido(s) — nome, cargo, data de admissão, concessionária, departamento, centro de custo e gestor — para atualizar o organograma.</p>
+        <form id="f-cfg" class="form-grid">
+          <label class="f"><span>E-mails que recebem o aviso (um por linha, até 10)</span>
+            <textarea class="input" name="emails" style="min-height:110px" placeholder="isabela.moura@gruponogueiralins.com.br">${esc(emails.join('\n'))}</textarea></label>
+          <div class="actions" style="justify-content:flex-end"><button class="btn primary sm" type="submit">Salvar</button></div></form></div></div>`;
+    $('#f-cfg').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const fr = e.currentTarget;
+      const lista = [...new Set(fr.emails.value.split(/[\s,;]+/).map((x) => x.trim().toLowerCase()).filter(Boolean))];
+      const inval = lista.filter((x) => !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(x));
+      if (inval.length) return toast('E-mail inválido: ' + inval[0], true);
+      if (lista.length > 10) return toast('Use no máximo 10 e-mails.', true);
+      const solta = travar($('button[type=submit]', fr), 'Salvando…');
+      const { error } = await sb.from('configuracoes').upsert({ chave: 'emails_admissao', valor: lista, atualizado_em: new Date().toISOString() }, { onConflict: 'chave' });
+      solta();
+      if (error) return toast(erroAmigavel(error), true);
+      S.config.emails_admissao = lista;
+      toast('E-mails salvos.');
+    });
+  }
+
   // ------------------------------------------------------------------ avisos
   async function telaAvisos() {
     carregando();
@@ -1141,7 +1586,7 @@
     const ns = data || [];
     view().innerHTML = `<div class="page" style="max-width:760px"><div class="page-head"><h1>Avisos</h1>
       ${ns.some((n) => !n.lida) ? '<button class="btn sm" data-todas>Marcar todos como lidos</button>' : ''}</div>
-      <div class="card">${ns.length ? ns.map((n) => `<a class="list-row" href="#/vaga/${esc(n.vaga_id)}" data-n="${n.id}" style="color:inherit">
+      <div class="card">${ns.length ? ns.map((n) => `<a class="list-row" href="${n.solicitacao_id ? '#/solicitacao/' + esc(n.solicitacao_id) : '#/vaga/' + esc(n.vaga_id)}" data-n="${n.id}" style="color:inherit">
         <span class="avatar" style="${n.lida ? 'opacity:.4' : ''}">${I.bell}</span>
         <div class="grow"><div style="${n.lida ? '' : 'font-weight:650'}">${esc(n.texto)}</div><small>${fmtDH(n.criado_em)}</small></div></a>`).join('')
         : '<div class="empty"><b>Tudo em dia</b>Você não tem avisos.</div>'}</div></div>`;
@@ -1156,6 +1601,7 @@
   function telaMais() {
     const adm = itensAdmin();
     view().innerHTML = `<div class="page" style="max-width:760px"><h1 style="margin-bottom:16px">Mais</h1>
+      <div class="card"><a class="list-row" href="#/solicitacoes" style="color:inherit">${I.swap}<div class="grow">Outras solicitações<br><small>Alteração de cargo/salário e solicitações gerais</small></div>›</a></div>
       ${adm.length ? `<div class="card"><h2 style="margin-bottom:6px">Administração</h2>${adm.map((x) => `<a class="list-row" href="#/${x.h}" style="color:inherit">${x.i}<div class="grow">${esc(x.l)}</div>›</a>`).join('')}</div>` : ''}
       <div class="card"><a class="list-row" href="#/conta" style="color:inherit">${I.user}<div class="grow">Minha conta</div>›</a>
       <a class="list-row" href="#" data-sair2 style="color:var(--bad)">${I.out}<div class="grow">Sair</div></a></div></div>`;
@@ -1331,14 +1777,15 @@
           <small>${[u.marca, u.cidade, u.cnpj ? 'CNPJ ' + u.cnpj : ''].filter(Boolean).map(esc).join(' · ') || '—'}</small></div>
           <div class="actions">${u.ativo ? '' : '<span class="chip bad">Inativa</span>'}<button class="btn sm" data-edit="${u.id}">Editar</button></div></div>
           ${u.gerente_nome || u.telefone || u.email ? `<p class="muted" style="margin:0 0 10px;font-size:13.5px">${[u.gerente_nome ? 'Gerente: ' + u.gerente_nome : '', u.telefone, u.email].filter(Boolean).map(esc).join(' · ')}</p>` : ''}
+          <p style="margin:0 0 10px;font-size:13.5px"><b>Aprovação:</b> ${u.aprovador_id ? esc(us.find((p) => p.id === u.aprovador_id)?.nome || u.aprovador_nome || '—') + ' <span class="muted">(diretor)</span>' : '<span class="muted">quem tem permissão de aprovar na unidade</span>'}</p>
           <div style="font-size:13px;font-weight:650;margin:6px 0 2px">Administradores e usuários da unidade</div>
           ${adms.length ? adms.map((p) => `<div class="list-row"><span class="avatar">${esc(iniciais(p.nome))}</span><div class="grow"><b>${esc(p.nome)}</b><br><small>${esc(p.email)}</small></div>
             <span class="chip info plain">${esc(PERFIS[p.perfil])}</span>${p.ativo ? '' : '<span class="chip bad">Inativo</span>'}<button class="btn sm ghost" data-eu="${p.id}">Editar</button></div>`).join('')
             : '<p class="muted" style="margin:6px 0">Nenhum usuário vinculado ainda.</p>'}
           <button class="btn sm" style="margin-top:8px" data-adm="${u.id}">${I.plus} Adicionar administrador</button></div>`;
       }).join('')}</div>`;
-    on(view(), '[data-nova]', 'click', () => formUnidade(null));
-    on(view(), '[data-edit]', 'click', (e) => formUnidade(S.unidades.find((x) => x.id === e.currentTarget.dataset.edit)));
+    on(view(), '[data-nova]', 'click', () => formUnidade(null, us));
+    on(view(), '[data-edit]', 'click', (e) => formUnidade(S.unidades.find((x) => x.id === e.currentTarget.dataset.edit), us));
     on(view(), '[data-adm]', 'click', (e) => formUsuario(null, { perfil: 'aprovador', unidades: [e.currentTarget.dataset.adm], depois: telaUnidades }));
     on(view(), '[data-eu]', 'click', async (e) => {
       const { data: u } = await sb.from('perfis').select('*').eq('id', e.currentTarget.dataset.eu).single();
@@ -1346,8 +1793,9 @@
     });
   }
 
-  function formUnidade(u) {
+  function formUnidade(u, us = []) {
     const d = u || { ativo: true, marca: '' };
+    const diretores = us.filter((p) => p.ativo || p.id === d.aprovador_id);
     const c = (k, rot, o = {}) => `<label class="f ${o.span ? 'span-2' : ''}"><span>${esc(rot)}${o.req ? ' <em>*</em>' : ''}</span><input class="input" name="${k}" maxlength="${o.max || 150}" value="${esc(d[k] || '')}" ${o.ph ? `placeholder="${esc(o.ph)}"` : ''} ${o.mode ? `inputmode="${o.mode}"` : ''}></label>`;
     const m = modal(`<h2>${u ? 'Editar concessionária' : 'Nova concessionária'}</h2><form id="f-uni" class="form-grid cols-2" novalidate>
       ${c('nome', 'Nome de exibição', { req: true, span: true, ph: 'Ex.: Royal Enfield Bravick - Rio Preto' })}
@@ -1355,6 +1803,10 @@
       ${c('razao_social', 'Razão social', { span: true })}${c('cnpj', 'CNPJ', { max: 18, mode: 'numeric', ph: '00.000.000/0000-00' })}${c('telefone', 'Telefone', { max: 20, mode: 'tel' })}
       ${c('endereco', 'Endereço', { span: true, max: 250 })}
       ${c('gerente_nome', 'Gerente geral')}${c('email', 'E-mail da unidade', { mode: 'email' })}
+      <label class="f span-2"><span>Diretor que aprova vagas e solicitações</span>
+        <select class="input" name="aprovador_id"><option value="">Sem diretor definido (aprova quem tem permissão na unidade)</option>
+        ${diretores.map((p) => `<option value="${p.id}" ${p.id === d.aprovador_id ? 'selected' : ''}>${esc(p.nome)} · ${esc(p.email)}</option>`).join('')}</select>
+        <div class="hint">Com diretor definido, somente ele (e o Master) aprova e recebe os avisos de aprovação desta concessionária. Ex.: VW → Marcos; Royal Enfield → Matheus.</div></label>
       <div class="span-2"><label class="check"><input type="checkbox" name="ativo" ${d.ativo ? 'checked' : ''}> Concessionária ativa</label></div>
       <div class="actions span-2"><button type="button" class="btn" data-fechar>Cancelar</button><button class="btn primary" type="submit">Salvar</button></div></form>`, { wide: true });
     const f = $('#f-uni', m.el);
@@ -1367,6 +1819,8 @@
       const dados = {};
       ['nome', 'marca', 'cidade', 'razao_social', 'cnpj', 'telefone', 'endereco', 'gerente_nome', 'email'].forEach((k) => { dados[k] = f[k].value.trim() || null; });
       dados.ativo = f.ativo.checked;
+      dados.aprovador_id = f.aprovador_id.value || null;
+      dados.aprovador_nome = dados.aprovador_id ? us.find((p) => p.id === dados.aprovador_id)?.nome || null : null;
       if (!dados.nome) return toast('Informe o nome.', true);
       const solta = travar($('button[type=submit]', f), 'Salvando…');
       const { error } = u ? await sb.from('unidades').update(dados).eq('id', u.id) : await sb.from('unidades').insert(dados);
@@ -1506,7 +1960,8 @@
     if (tab) q = q.eq('tabela', tab);
     const { data } = await q;
     const ls = data || [];
-    const NOMES = { vagas: 'Vagas', vaga_remuneracao: 'Remuneração', perfis: 'Usuários', unidades: 'Concessionárias', cargos: 'Cargos', departamentos: 'Departamentos', beneficios: 'Benefícios', vaga_anexos: 'Documentos', configuracoes: 'Configurações' };
+    const NOMES = { vagas: 'Vagas', vaga_remuneracao: 'Remuneração', perfis: 'Usuários', unidades: 'Concessionárias', cargos: 'Cargos', departamentos: 'Departamentos', beneficios: 'Benefícios', vaga_anexos: 'Documentos', configuracoes: 'Configurações',
+      vaga_admissoes: 'Checklist de admissão', solicitacoes: 'Outras solicitações', solicitacao_salarios: 'Salários (solicitações)' };
     const ACAO = { INSERT: ['Criou', 'ok'], UPDATE: ['Alterou', 'info'], DELETE: ['Excluiu', 'bad'] };
     view().innerHTML = `<div class="page" style="max-width:900px"><div class="page-head"><div><h1>Auditoria</h1><small>Registro permanente de alterações (últimos 300)</small></div>
       <select class="input" id="ft" style="max-width:220px" aria-label="Filtrar"><option value="">Tudo</option>${Object.entries(NOMES).map(([k, l]) => `<option value="${k}" ${tab === k ? 'selected' : ''}>${l}</option>`).join('')}</select></div>

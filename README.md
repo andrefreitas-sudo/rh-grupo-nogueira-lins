@@ -22,6 +22,13 @@ PWA para requisição e acompanhamento de vagas das concessionárias do Grupo No
 | `supabase/schema.sql` | Banco completo — pode ser rodado de novo com segurança |
 | `supabase/master.sql` | Promove um usuário a Master |
 | `supabase/admin-usuarios.ts` | Função de servidor para criar usuários, gerar senha e ativar/desativar |
+| `supabase/avisos-email.ts` | Função de servidor que envia o e-mail de admissão concluída (organograma) via Brevo |
 
 ## Atualizar o app
 Altere os arquivos e envie para a branch `main`. Ao mudar o app, aumente `VERSAO` em `sw.js` para os celulares baixarem a versão nova.
+
+## REV.03 (novembro/2026)
+- **Aprovação pela diretoria:** cada concessionária pode ter um diretor aprovador (Concessionárias → Editar). Com diretor definido, só ele (e o Master) aprova e recebe o aviso.
+- **Checklist de admissão:** na etapa “Admissão em andamento”, cada admitido tem a lista de documentos (foto, RG/CPF, CNH, comprovante, CTPS, PIS, conta BB/Bradesco, escolaridade, certidão, RG cônjuge/filhos opcionais, ASO) e adiantamento Sim/Não. Cada item aceita anexo.
+- **E-mail ao organograma:** ao concluir a vaga, a função `avisos-email` envia os dados do admitido para os e-mails de Configurações. Segredos da função: `BREVO_API_KEY`, `EMAIL_REMETENTE` (e opcional `EMAIL_REMETENTE_NOME`).
+- **Outras solicitações:** alteração de cargo e/ou salário (passa pela diretoria) e solicitações gerais (direto ao RH).

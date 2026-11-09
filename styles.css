@@ -329,3 +329,25 @@ pre.json { font-size: 12px; background: var(--surface-2); padding: 10px; border-
 .meter i { display: block; height: 100%; background: var(--accent); border-radius: 8px; }
 .meter.alert i { background: var(--warn); }
 @media (max-width: 480px) { .doc-row { flex-wrap: wrap; } .doc-act { width: 100%; justify-content: flex-end; } }
+
+/* ---------- REV.03: checklist de admissão e outras solicitações ---------- */
+.adm { border: 1px solid var(--line); border-radius: var(--radius-sm); padding: 12px; margin-bottom: 12px; background: var(--surface); }
+.adm-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; padding-bottom: 8px; border-bottom: 1px solid var(--line); }
+.adm-head .grow { flex: 1; min-width: 160px; }
+.adm-list { display: grid; }
+.adm-row { display: flex; align-items: center; gap: 8px; border-bottom: 1px dashed var(--line); min-height: 44px; }
+.adm-row:last-child { border-bottom: 0; }
+.adm-row.ok .adm-chk span { color: var(--ok); }
+.adm-chk { flex: 1; min-width: 0; padding: 6px 0; }
+.adm-chk input:disabled { opacity: 1; cursor: default; }
+.adm-files { display: flex; align-items: center; gap: 4px; flex-wrap: wrap; justify-content: flex-end; max-width: 60%; }
+.adm-file { max-width: 160px; }
+.adm-file span:last-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.adm-files label.btn { cursor: pointer; }
+.adm-adiant { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; padding-top: 10px; margin-top: 4px; border-top: 1px solid var(--line); font-weight: 600; font-size: 14px; }
+.adm-adiant .seg span { padding: 6px 14px; }
+.adm-mail { display: flex; align-items: center; gap: 10px; padding: 12px; border-radius: var(--radius-sm); background: var(--surface-2); }
+.adm-mail .grow { flex: 1; min-width: 0; }
+.tipo-sol { padding: 14px; margin: 0; border: 1px solid var(--line) !important; }
+.tipo-sol:hover { border-color: var(--accent) !important; }
+@media (max-width: 520px) { .adm-files { max-width: 50%; } .adm-file { max-width: 110px; } }
